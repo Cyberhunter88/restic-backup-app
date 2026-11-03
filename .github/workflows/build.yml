@@ -1,0 +1,36 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: restic-backup-app-linux
+            bin: restic-backup-app
+          - os: windows-latest
+            artifact: restic-backup-app-windows
+            bin: restic-backup-app.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux-Abhängigkeiten
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y restic libdbus-1-dev pkg-config libxkbcommon-dev libwayland-dev libgtk-3-dev
+      - name: Windows - restic installieren
+        if: runner.os == 'Windows'
+        run: choco install restic -y
+      - run: cargo test --release
+      - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: target/release/${{ matrix.bin }}
