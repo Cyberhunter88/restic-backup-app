@@ -301,7 +301,16 @@ mod tests {
         assert_eq!(snaps.len(), 1);
         let out = d.path().join("out");
         r.restore(&snaps[0].id, &out.to_string_lossy(), None).unwrap();
-        let restored = out.join(src.strip_prefix("/").unwrap()).join("a.txt");
+        // restic stellt den vollen Originalpfad unter dem Ziel wieder her (Windows: Laufwerksbuchstabe als Ordner)
+        let mut restored = out.clone();
+        for c in src.components() {
+            match c {
+                std::path::Component::Prefix(p) => restored.push(p.as_os_str().to_string_lossy().replace(':', "")),
+                std::path::Component::RootDir => {}
+                other => restored.push(other),
+            }
+        }
+        let restored = restored.join("a.txt");
         assert_eq!(std::fs::read_to_string(restored).unwrap(), "hallo");
         r.forget(1, 0, 0).unwrap();
         r.check().unwrap();

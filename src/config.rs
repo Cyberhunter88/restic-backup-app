@@ -47,6 +47,7 @@ pub fn config_path() -> Result<PathBuf> {
     Ok(dirs()?.config_dir().join("config.toml"))
 }
 
+#[cfg_attr(windows, allow(dead_code))]
 pub fn data_dir() -> Result<PathBuf> {
     Ok(dirs()?.data_local_dir().to_path_buf())
 }
