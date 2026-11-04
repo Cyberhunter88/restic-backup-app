@@ -65,10 +65,11 @@ jobs:
           cargo deb --no-build
           mkdir -p dist
           cp target/debian/*.deb dist/
+          cp packaging/icon.png restic-backup-app.png
           ARCH=x86_64 ./linuxdeploy --appdir AppDir \
             -e target/release/restic-backup-app \
             -d packaging/linux/restic-backup-app.desktop \
-            -i packaging/icon.png --output appimage
+            -i restic-backup-app.png --output appimage
           mv restic*.AppImage dist/restic-backup-app-${{ steps.ver.outputs.version }}-x86_64.AppImage
 
       - name: Windows – Setup bauen
