@@ -1,10 +1,13 @@
 [package]
 name = "restic-backup-app"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+description = "restic-Backup auf NAS (SMB) mit Zeitplan, Restore und Retention"
+license = "MIT"
 
 [dependencies]
 anyhow = "1.0.104"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.6.7", features = ["derive"] }
 directories = "6.0.0"
 eframe = "0.37.0"
@@ -16,3 +19,15 @@ toml = "1.1.8"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[package.metadata.deb]
+maintainer = "Cyberhuter"
+depends = "$auto, restic, cifs-utils, policykit-1"
+section = "utils"
+priority = "optional"
+extended-description = "Sichert Ordner per restic auf eine SMB-Freigabe (NAS), mit Zeitplan, Wiederherstellung und Aufbewahrungsregeln."
+assets = [
+    ["target/release/restic-backup-app", "usr/bin/", "755"],
+    ["packaging/linux/restic-backup-app.desktop", "usr/share/applications/", "644"],
+    ["packaging/icon.png", "usr/share/icons/hicolor/256x256/apps/restic-backup-app.png", "644"],
+]

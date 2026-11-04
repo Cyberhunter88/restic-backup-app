@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=restic Backup
+Comment=restic-Backup auf NAS (SMB)
+Exec=restic-backup-app
+Icon=restic-backup-app
+Terminal=false
+Categories=Utility;Archiving;

@@ -2,8 +2,13 @@ name: build
 
 on:
   push:
+    branches: ["**"]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -12,25 +17,85 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact: restic-backup-app-linux
-            bin: restic-backup-app
+            target: linux
           - os: windows-latest
-            artifact: restic-backup-app-windows
-            bin: restic-backup-app.exe
+            target: windows
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+
+      - name: Version aus Cargo.toml
+        id: ver
+        shell: bash
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF" == refs/tags/v* && "$GITHUB_REF_NAME" != "v$v" ]]; then
+            echo "Tag $GITHUB_REF_NAME passt nicht zur Cargo-Version $v"; exit 1
+          fi
+
+      # ---------- Linux ----------
       - name: Linux-Abhängigkeiten
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y restic libdbus-1-dev pkg-config libxkbcommon-dev libwayland-dev libgtk-3-dev
-      - name: Windows - restic installieren
+      - name: Linux – cargo-deb und linuxdeploy
+        if: runner.os == 'Linux'
+        run: |
+          cargo install cargo-deb --locked
+          sudo apt-get install -y libfuse2
+          curl -fsSL -o linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy
+
+      # ---------- Windows ----------
+      - name: Windows – restic und Inno Setup installieren
         if: runner.os == 'Windows'
-        run: choco install restic -y
+        shell: pwsh
+        run: |
+          choco install restic innosetup -y
+          Copy-Item (Get-Command restic).Source packaging\windows\restic.exe
+
       - run: cargo test --release
       - run: cargo build --release
+
+      - name: Linux – .deb und AppImage
+        if: runner.os == 'Linux'
+        run: |
+          cargo deb --no-build
+          mkdir -p dist
+          cp target/debian/*.deb dist/
+          cp packaging/icon.png restic-backup-app.png
+          ARCH=x86_64 ./linuxdeploy --appdir AppDir \
+            -e target/release/restic-backup-app \
+            -d packaging/linux/restic-backup-app.desktop \
+            -i restic-backup-app.png --output appimage
+          mv restic*.AppImage dist/restic-backup-app-${{ steps.ver.outputs.version }}-x86_64.AppImage
+
+      - name: Windows – Setup bauen
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.ver.outputs.version }}" packaging\windows\setup.iss
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\installer\*.exe dist\
+          Copy-Item target\release\restic-backup-app.exe dist\restic-backup-app-windows-x86_64.exe
+
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: target/release/${{ matrix.bin }}
+          name: restic-backup-app-${{ matrix.target }}
+          path: dist/*
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

@@ -79,10 +79,11 @@ mod linux {
     }
 
     /// Bindet die Freigabe per `mount.cifs` (über pkexec für Root-Rechte) ein.
-    pub fn mount(cfg: &Config, password: &str) -> Result<()> {
+    /// Liefert `true`, wenn die App die Freigabe neu eingebunden hat.
+    pub fn mount(cfg: &Config, password: &str) -> Result<bool> {
         let mp = mount_point()?;
         if is_mounted(&mp) {
-            return Ok(());
+            return Ok(false);
         }
         // fstab-Eintrag mit `user`: Mount ohne Root und ohne Dialog (auch für Zeitplan)
         if in_fstab(&mp) {
@@ -91,7 +92,7 @@ mod linux {
             if !out.status.success() {
                 bail!("SMB-Mount fehlgeschlagen: {}", String::from_utf8_lossy(&out.stderr).trim());
             }
-            return Ok(());
+            return Ok(true);
         }
         let uid = std::fs::metadata(&mp)?.uid();
         let gid = std::fs::metadata(&mp)?.gid();
@@ -113,7 +114,7 @@ mod linux {
         if !out.status.success() {
             bail!("SMB-Mount fehlgeschlagen: {}", String::from_utf8_lossy(&out.stderr).trim());
         }
-        Ok(())
+        Ok(true)
     }
 
     pub fn unmount(_cfg: &Config) -> Result<()> {
@@ -137,22 +138,58 @@ mod linux {
 mod windows {
     use super::*;
     use anyhow::bail;
+    use std::io::Write;
     use std::os::windows::process::CommandExt;
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
     fn net(args: &[&str]) -> Result<std::process::Output> {
         Ok(Command::new("net").args(args).creation_flags(0x0800_0000).output()?)
     }
 
-    /// Hinweis: `net use` erhält das Passwort als Argument (kurzzeitig in der Prozessliste sichtbar).
-    pub fn mount(cfg: &Config, password: &str) -> Result<()> {
+    fn text(o: &std::process::Output) -> String {
+        format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+    }
+
+    /// Fehler 1219 = bereits mit anderen Anmeldedaten verbunden.
+    fn already_connected(o: &std::process::Output) -> bool {
+        text(o).contains("1219")
+    }
+
+    /// Verbindet die Freigabe. Das Passwort wird über stdin übergeben (nicht als Argument).
+    /// Liefert `true`, wenn die App die Verbindung neu aufgebaut hat.
+    pub fn mount(cfg: &Config, password: &str) -> Result<bool> {
         let unc = format!(r"\\{}\{}", cfg.host, cfg.share);
-        let out = net(&["use", &unc, password, &format!("/user:{}", cfg.smb_user), "/persistent:no"])?;
-        // Fehler 1219 = bereits mit anderen Anmeldedaten verbunden; Fehler 85 = schon zugeordnet
-        if !out.status.success() && !String::from_utf8_lossy(&out.stdout).contains("1219") {
-            bail!("SMB-Verbindung fehlgeschlagen: {}", String::from_utf8_lossy(&out.stderr).trim());
+        // Bereits verbunden (z. B. durch den Nutzer)? Dann nichts anfassen und später nicht trennen.
+        if net(&["use", &unc]).map(|o| o.status.success()).unwrap_or(false) {
+            return Ok(false);
         }
-        Ok(())
+        let user = format!("/user:{}", cfg.smb_user);
+        let mut child = Command::new("net")
+            .args(["use", &unc, "*", &user, "/persistent:no"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .creation_flags(0x0800_0000)
+            .spawn()?;
+        if let Some(mut si) = child.stdin.take() {
+            let _ = writeln!(si, "{password}");
+        }
+        let out = child.wait_with_output()?;
+        if out.status.success() {
+            return Ok(true);
+        }
+        if already_connected(&out) {
+            return Ok(false);
+        }
+        // Fallback: Passwort als Argument (kurzzeitig in der Prozessliste sichtbar)
+        let out = net(&["use", &unc, password, &user, "/persistent:no"])?;
+        if out.status.success() {
+            return Ok(true);
+        }
+        if already_connected(&out) {
+            return Ok(false);
+        }
+        bail!("SMB-Verbindung fehlgeschlagen: {}", text(&out).trim());
     }
 
     pub fn unmount(cfg: &Config) -> Result<()> {
