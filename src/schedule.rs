@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use std::process::Command;
 
-fn parse_time(t: &str) -> Result<(u32, u32)> {
+pub fn parse_time(t: &str) -> Result<(u32, u32)> {
     let (h, m) = t.split_once(':').context("Zeit muss HH:MM sein")?;
     let (h, m): (u32, u32) = (h.parse()?, m.parse()?);
     if h > 23 || m > 59 {

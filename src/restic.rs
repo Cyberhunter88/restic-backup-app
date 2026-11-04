@@ -33,6 +33,35 @@ pub struct Node {
     pub size: u64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum RepoState {
+    Ok,
+    NotFound,
+    WrongPassword,
+    Error(String),
+}
+
+/// Ergebnis eines Backups; `warnings` = einige Dateien waren nicht lesbar (restic-Exit-Code 3).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BackupOutcome {
+    pub warnings: bool,
+}
+
+/// Rechnername, so wie restic ihn als Standard-Host verwendet.
+pub fn local_hostname() -> String {
+    let mut c = Command::new("hostname");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000);
+    }
+    c.output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // Zähler für spätere Statusanzeige
 pub enum BackupEvent {
@@ -87,8 +116,44 @@ pub fn parse_ls(output: &str) -> Vec<Node> {
         .collect()
 }
 
-pub fn forget_args(daily: u32, weekly: u32, monthly: u32) -> Vec<String> {
+/// Optionen, die bestimmen, was ins Backup kommt.
+#[derive(Default, Clone)]
+pub struct BackupOptions<'a> {
+    pub sources: &'a [String],
+    pub excludes: &'a [String],
+    pub exclude_caches: bool,
+    pub exclude_if_present: &'a [String],
+    pub exclude_larger_than: &'a str,
+    pub host: &'a str,
+}
+
+pub fn backup_args(o: &BackupOptions) -> Vec<String> {
+    let mut a = vec!["backup".to_string(), "--json".into()];
+    if !o.host.is_empty() {
+        a.extend(["--host".into(), o.host.into()]);
+    }
+    for e in o.excludes {
+        a.extend(["--exclude".into(), e.clone()]);
+    }
+    if o.exclude_caches {
+        a.push("--exclude-caches".into());
+    }
+    for f in o.exclude_if_present.iter().filter(|f| !f.trim().is_empty()) {
+        a.extend(["--exclude-if-present".into(), f.trim().into()]);
+    }
+    if !o.exclude_larger_than.trim().is_empty() {
+        a.extend(["--exclude-larger-than".into(), o.exclude_larger_than.trim().into()]);
+    }
+    a.extend(o.sources.iter().cloned());
+    a
+}
+
+/// `host`: nur Snapshots dieses Rechners aufräumen (wichtig bei geteilten Repos).
+pub fn forget_args(daily: u32, weekly: u32, monthly: u32, host: &str) -> Vec<String> {
     let mut a = vec!["forget".to_string(), "--prune".into()];
+    if !host.is_empty() {
+        a.extend(["--host".into(), host.into()]);
+    }
     for (flag, n) in [("--keep-daily", daily), ("--keep-weekly", weekly), ("--keep-monthly", monthly)] {
         if n > 0 {
             a.push(flag.into());
@@ -128,9 +193,27 @@ impl Restic {
         args.iter().map(|s| s.to_string()).collect()
     }
 
-    /// Prüft, ob am Repo-Pfad bereits ein Repository existiert.
-    pub fn exists(&self) -> bool {
-        self.run(&Self::s(&["cat", "config"])).is_ok()
+    /// Prüft den Zustand des Repos (Exit 10 = nicht vorhanden, 12 = falsches Passwort).
+    pub fn probe(&self) -> RepoState {
+        match self.cmd(&Self::s(&["cat", "config"])).output() {
+            Err(e) => RepoState::Error(format!("'{}' konnte nicht gestartet werden: {e}", self.bin)),
+            Ok(o) if o.status.success() => RepoState::Ok,
+            Ok(o) => match o.status.code() {
+                Some(10) => RepoState::NotFound,
+                Some(12) => RepoState::WrongPassword,
+                _ => {
+                    let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                    // Ältere restic-Versionen kennen die Exit-Codes nicht
+                    if err.contains("wrong password") {
+                        RepoState::WrongPassword
+                    } else if err.contains("does not exist") || err.contains("Is there a repository at") {
+                        RepoState::NotFound
+                    } else {
+                        RepoState::Error(err)
+                    }
+                }
+            },
+        }
     }
 
     pub fn init(&self) -> Result<()> {
@@ -156,26 +239,20 @@ impl Restic {
         self.run(&a).map(|_| ())
     }
 
-    pub fn forget(&self, daily: u32, weekly: u32, monthly: u32) -> Result<()> {
+    pub fn forget(&self, daily: u32, weekly: u32, monthly: u32, host: &str) -> Result<()> {
         if daily + weekly + monthly == 0 {
             bail!("Keine Aufbewahrungsregel gesetzt – forget würde nichts behalten");
         }
-        self.run(&forget_args(daily, weekly, monthly)).map(|_| ())
+        self.run(&forget_args(daily, weekly, monthly, host)).map(|_| ())
     }
 
-    #[allow(dead_code)]
     pub fn check(&self) -> Result<()> {
         self.run(&Self::s(&["check"])).map(|_| ())
     }
 
     /// Führt ein Backup aus. Exit-Code 3 (einige Dateien nicht lesbar) gilt als Warnung, nicht als Fehler.
-    pub fn backup(&self, sources: &[String], excludes: &[String], cancel: &AtomicBool, mut on_event: impl FnMut(BackupEvent)) -> Result<()> {
-        let mut args = Self::s(&["backup", "--json"]);
-        for e in excludes {
-            args.push("--exclude".into());
-            args.push(e.clone());
-        }
-        args.extend(sources.iter().cloned());
+    pub fn backup(&self, opts: &BackupOptions, cancel: &AtomicBool, mut on_event: impl FnMut(BackupEvent)) -> Result<BackupOutcome> {
+        let args = backup_args(opts);
         let mut child = self
             .cmd(&args)
             .stdout(Stdio::piped())
@@ -218,7 +295,8 @@ impl Restic {
         }
         let err = err_thread.join().unwrap_or_default();
         match status.code() {
-            Some(0) | Some(3) => Ok(()),
+            Some(0) => Ok(BackupOutcome::default()),
+            Some(3) => Ok(BackupOutcome { warnings: true }),
             _ => bail!("restic backup fehlgeschlagen: {}", err.trim()),
         }
     }
@@ -247,7 +325,41 @@ mod tests {
 
     #[test]
     fn forget_skips_zero() {
-        assert_eq!(forget_args(7, 0, 6), ["forget", "--prune", "--keep-daily", "7", "--keep-monthly", "6"]);
+        assert_eq!(forget_args(7, 0, 6, ""), ["forget", "--prune", "--keep-daily", "7", "--keep-monthly", "6"]);
+        assert_eq!(forget_args(1, 0, 0, "pc"), ["forget", "--prune", "--host", "pc", "--keep-daily", "1"]);
+    }
+
+    #[test]
+    fn backup_args_include_excludes() {
+        let src = vec!["/data".to_string()];
+        let ex = vec!["*.tmp".to_string()];
+        let nb = vec![".nobackup".to_string()];
+        let a = backup_args(&BackupOptions {
+            sources: &src,
+            excludes: &ex,
+            exclude_caches: true,
+            exclude_if_present: &nb,
+            exclude_larger_than: "500M",
+            host: "pc",
+        });
+        assert_eq!(
+            a,
+            ["backup", "--json", "--host", "pc", "--exclude", "*.tmp", "--exclude-caches", "--exclude-if-present", ".nobackup", "--exclude-larger-than", "500M", "/data"]
+        );
+    }
+
+    #[test]
+    fn probe_states() {
+        if Command::new("restic").arg("version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let mut r = Restic { bin: "restic".into(), repo: d.path().join("repo").to_string_lossy().into(), password: "pw".into() };
+        assert_eq!(r.probe(), RepoState::NotFound);
+        r.init().unwrap();
+        assert_eq!(r.probe(), RepoState::Ok);
+        r.password = "falsch".into();
+        assert_eq!(r.probe(), RepoState::WrongPassword);
     }
 
     #[test]
@@ -261,7 +373,7 @@ mod tests {
         std::fs::write(src.join("a.txt"), "x").unwrap();
         let r = Restic { bin: "restic".into(), repo: d.path().join("repo").to_string_lossy().into(), password: "pw".into() };
         r.init().unwrap();
-        let err = r.backup(&[src.to_string_lossy().into()], &[], &AtomicBool::new(true), |_| {});
+        let err = r.backup(&BackupOptions { sources: &[src.to_string_lossy().into()], ..Default::default() }, &AtomicBool::new(true), |_| {});
         // Entweder rechtzeitig abgebrochen oder (bei sehr kleinem Backup) schon fertig – kein Hänger, kein Panic
         if let Err(e) = err {
             assert!(e.to_string().contains("abgebrochen"));
@@ -277,7 +389,7 @@ mod tests {
         let mut r = Restic { bin: "restic".into(), repo: d.path().join("repo").to_string_lossy().into(), password: "pw".into() };
         r.init().unwrap();
         r.password = "falsch".into();
-        assert!(!r.exists());
+        assert_eq!(r.probe(), RepoState::WrongPassword);
         assert!(r.snapshots().is_err());
     }
 
@@ -291,11 +403,11 @@ mod tests {
         std::fs::create_dir(&src).unwrap();
         std::fs::write(src.join("a.txt"), "hallo").unwrap();
         let r = Restic { bin: "restic".into(), repo: d.path().join("repo").to_string_lossy().into(), password: "pw".into() };
-        assert!(!r.exists());
+        assert_eq!(r.probe(), RepoState::NotFound);
         r.init().unwrap();
-        assert!(r.exists());
+        assert_eq!(r.probe(), RepoState::Ok);
         let mut got_summary = false;
-        r.backup(&[src.to_string_lossy().into()], &[], &AtomicBool::new(false), |e| got_summary |= matches!(e, BackupEvent::Summary { .. })).unwrap();
+        r.backup(&BackupOptions { sources: &[src.to_string_lossy().into()], ..Default::default() }, &AtomicBool::new(false), |e| got_summary |= matches!(e, BackupEvent::Summary { .. })).unwrap();
         assert!(got_summary);
         let snaps = r.snapshots().unwrap();
         assert_eq!(snaps.len(), 1);
@@ -312,7 +424,7 @@ mod tests {
         }
         let restored = restored.join("a.txt");
         assert_eq!(std::fs::read_to_string(restored).unwrap(), "hallo");
-        r.forget(1, 0, 0).unwrap();
+        r.forget(1, 0, 0, "").unwrap();
         r.check().unwrap();
     }
 }

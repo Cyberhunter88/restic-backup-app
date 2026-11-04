@@ -1,7 +1,9 @@
 use crate::config::Config;
 use crate::restic::{BackupEvent, Node, Snapshot};
 use crate::secrets::{self, Secret};
-use crate::{job, schedule, smb};
+use crate::{job, schedule, update};
+#[cfg(unix)]
+use crate::smb;
 use eframe::egui;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -14,6 +16,7 @@ enum Msg {
     Snaps(Result<Vec<Snapshot>, String>),
     Nodes(Result<Vec<Node>, String>),
     Info(Result<String, String>),
+    Update(Result<update::Latest, String>),
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -22,6 +25,7 @@ enum Tab {
     Snapshots,
     Settings,
     Schedule,
+    About,
 }
 
 pub struct App {
@@ -30,6 +34,9 @@ pub struct App {
     smb_pw: String,
     repo_pw: String,
     new_exclude: String,
+    new_marker: String,
+    update_msg: String,
+    update_url: Option<String>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     busy: bool,
@@ -54,6 +61,9 @@ impl App {
             smb_pw: String::new(),
             repo_pw: String::new(),
             new_exclude: String::new(),
+            new_marker: String::new(),
+            update_msg: String::new(),
+            update_url: None,
             tx,
             rx,
             busy: false,
@@ -90,10 +100,12 @@ impl App {
                 }
                 Msg::BackupDone(r) => {
                     self.busy = false;
+                    let ok = r.is_ok();
                     self.log.push(match r {
                         Ok(()) => "Backup erfolgreich.".into(),
                         Err(e) => format!("FEHLER: {e}"),
                     });
+                    let _ = crate::config::write_last_run(ok, &self.log);
                 }
                 Msg::Snaps(r) => {
                     self.busy = false;
@@ -110,6 +122,17 @@ impl App {
                     match r {
                         Ok(n) => self.nodes = n,
                         Err(e) => self.status = e,
+                    }
+                }
+                Msg::Update(r) => {
+                    self.busy = false;
+                    match r {
+                        Ok(l) if update::is_newer(&l.version, env!("CARGO_PKG_VERSION")) => {
+                            self.update_msg = format!("Neue Version {} verfügbar (installiert: {}).", l.version, env!("CARGO_PKG_VERSION"));
+                            self.update_url = Some(l.url);
+                        }
+                        Ok(_) => self.update_msg = "Du verwendest die neueste Version.".into(),
+                        Err(e) => self.update_msg = format!("FEHLER: {e}"),
                     }
                 }
                 Msg::Info(r) => {
@@ -129,16 +152,27 @@ impl App {
             if ui.button("Backup jetzt starten").clicked() {
                 self.progress = 0.0;
                 self.log.clear();
+                if let Err(e) = self.cfg.validate() {
+                    self.log.push(format!("FEHLER: {e:#}"));
+                    return;
+                }
                 let cfg = self.cfg.clone();
                 self.cancel.store(false, Ordering::Relaxed);
                 let cancel = self.cancel.clone();
                 self.spawn(ui.ctx(), move |tx| {
                     let (t1, t2) = (tx.clone(), tx.clone());
                     let r = job::run_backup(&cfg, true, &cancel, move |m| drop(t1.send(Msg::Log(m))), move |e| drop(t2.send(Msg::Event(e))));
-                    let _ = tx.send(Msg::BackupDone(r.map_err(|e| format!("{e:#}"))));
+                    let _ = tx.send(Msg::BackupDone(r.map(|_| ()).map_err(|e| format!("{e:#}"))));
                 });
             }
         });
+        if self.log.is_empty() && !self.busy {
+            if let Some(last) = crate::config::read_last_run() {
+                ui.separator();
+                ui.label("Letzter Lauf:");
+                ui.label(last);
+            }
+        }
         if self.busy {
             ui.horizontal(|ui| {
                 ui.add(egui::ProgressBar::new(self.progress).show_percentage());
@@ -165,6 +199,14 @@ impl App {
                     });
                 }
             });
+            if ui.add_enabled(!self.busy, egui::Button::new("Repository prüfen (check)")).clicked() {
+                let cfg = self.cfg.clone();
+                self.status = "Prüfe Repository …".into();
+                self.spawn(ui.ctx(), move |tx| {
+                    let r = job::open(&cfg).and_then(|r| r.check());
+                    let _ = tx.send(Msg::Info(r.map(|_| "Repository ist in Ordnung.".to_string()).map_err(|e| format!("{e:#}"))));
+                });
+            }
             if self.busy {
                 ui.spinner();
             }
@@ -181,13 +223,16 @@ impl App {
         });
         ui.separator();
         let mut to_select = None;
+        let busy = self.busy;
         egui::ScrollArea::vertical().id_salt("snaps").max_height(160.0).show(ui, |ui| {
-            for s in &self.snapshots {
-                let sel = self.selected.as_deref() == Some(&s.id);
-                if ui.selectable_label(sel, format!("{}  {}  {}  {}", s.short_id, s.time, s.hostname, s.paths.join(", "))).clicked() {
-                    to_select = Some(s.id.clone());
+            ui.add_enabled_ui(!busy, |ui| {
+                for s in &self.snapshots {
+                    let sel = self.selected.as_deref() == Some(&s.id);
+                    if ui.selectable_label(sel, format!("{}  {}  {}  {}", s.short_id, s.time, s.hostname, s.paths.join(", "))).clicked() {
+                        to_select = Some(s.id.clone());
+                    }
                 }
-            }
+            });
         });
         if let Some(id) = to_select {
             self.selected = Some(id);
@@ -198,7 +243,7 @@ impl App {
         ui.separator();
         ui.horizontal(|ui| {
             ui.label(format!("Ordner: {}", self.dir));
-            if self.dir != "/" && ui.button("↑ Hoch").clicked() {
+            if self.dir != "/" && ui.add_enabled(!self.busy, egui::Button::new("↑ Hoch")).clicked() {
                 let parent = std::path::Path::new(&self.dir).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or("/".into());
                 self.dir = if parent.is_empty() { "/".into() } else { parent };
                 self.load_dir(ui.ctx());
@@ -213,7 +258,7 @@ impl App {
             for n in &self.nodes {
                 ui.horizontal(|ui| {
                     if n.kind == "dir" {
-                        if ui.link(format!("📁 {}", n.name)).clicked() {
+                        if ui.add_enabled(!self.busy, egui::Button::new(format!("📁 {}", n.name)).frame(false)).clicked() {
                             enter = Some(n.path.clone());
                         }
                     } else {
@@ -282,6 +327,17 @@ impl App {
             });
             ui.end_row();
         });
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.cfg.allow_init, "Neues Repo anlegen, falls keins existiert");
+            if ui.add_enabled(!self.busy, egui::Button::new("Repo prüfen")).clicked() {
+                let cfg = self.cfg.clone();
+                self.status = "Prüfe Repository …".into();
+                self.spawn(ui.ctx(), move |tx| {
+                    let _ = tx.send(Msg::Info(job::describe_repo(&cfg).map_err(|e| format!("{e:#}"))));
+                });
+            }
+        });
+        ui.label("Bestehendes restic-Repo verwenden: Freigabe und Unterordner wie im Repo angeben, Repo-Passwort eintragen, dann „Repo prüfen“.");
         ui.separator();
         ui.label("Quellordner:");
         let mut del = None;
@@ -321,6 +377,38 @@ impl App {
                 self.cfg.excludes.push(self.new_exclude.trim().to_string());
                 self.new_exclude.clear();
             }
+            if ui.button("Übliche Ausschlüsse").clicked() {
+                for p in crate::config::COMMON_EXCLUDES {
+                    if !self.cfg.excludes.iter().any(|e| e == p) {
+                        self.cfg.excludes.push((*p).to_string());
+                    }
+                }
+            }
+        });
+        ui.checkbox(&mut self.cfg.exclude_caches, "Ordner mit CACHEDIR.TAG ausschließen");
+        ui.horizontal(|ui| {
+            ui.label("Größer als (z. B. 500M, leer = aus):");
+            ui.text_edit_singleline(&mut self.cfg.exclude_larger_than);
+        });
+        ui.label("Ordner mit Markerdatei ausschließen (z. B. .nobackup):");
+        let mut del = None;
+        for (i, s) in self.cfg.exclude_if_present.iter().enumerate() {
+            ui.horizontal(|ui| {
+                if ui.small_button("✖").clicked() {
+                    del = Some(i);
+                }
+                ui.label(s);
+            });
+        }
+        if let Some(i) = del {
+            self.cfg.exclude_if_present.remove(i);
+        }
+        ui.horizontal(|ui| {
+            ui.text_edit_singleline(&mut self.new_marker);
+            if ui.button("Marker hinzufügen").clicked() && !self.new_marker.trim().is_empty() {
+                self.cfg.exclude_if_present.push(self.new_marker.trim().to_string());
+                self.new_marker.clear();
+            }
         });
         ui.separator();
         if ui.button("Speichern").clicked() {
@@ -333,6 +421,7 @@ impl App {
     }
 
     fn save(&mut self) -> anyhow::Result<()> {
+        self.cfg.validate()?;
         self.cfg.save()?;
         if !self.smb_pw.is_empty() {
             secrets::set(Secret::Smb, &self.smb_pw)?;
@@ -343,6 +432,26 @@ impl App {
             self.repo_pw.clear();
         }
         Ok(())
+    }
+
+    fn about_tab(&mut self, ui: &mut egui::Ui) {
+        ui.heading("restic Backup");
+        ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
+        ui.separator();
+        if ui.add_enabled(!self.busy, egui::Button::new("Nach Updates suchen")).clicked() {
+            self.update_msg = "Suche …".into();
+            self.update_url = None;
+            self.spawn(ui.ctx(), move |tx| {
+                let _ = tx.send(Msg::Update(update::fetch_latest().map_err(|e| format!("{e:#}"))));
+            });
+        }
+        ui.label(&self.update_msg);
+        if let Some(url) = self.update_url.clone() {
+            if ui.button("Download-Seite öffnen").clicked() {
+                update::open_url(&url);
+            }
+            ui.label("Neues Setup (Windows) bzw. .deb/AppImage (Linux) installieren – Einstellungen und Passwörter bleiben erhalten.");
+        }
     }
 
     fn schedule_tab(&mut self, ui: &mut egui::Ui) {
@@ -385,7 +494,20 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        let _ = smb::unmount(&self.cfg);
+        // Laufenden Job abbrechen und kurz auf sein Ende warten, bevor die Freigabe getrennt wird
+        if self.busy {
+            self.cancel.store(true, Ordering::Relaxed);
+            for _ in 0..25 {
+                self.poll();
+                if !self.busy {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
+        if !self.busy {
+            let _ = job::unmount_if_ours(&self.cfg);
+        }
     }
 }
 
@@ -393,7 +515,8 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll();
         ui.horizontal(|ui| {
-            for (t, name) in [(Tab::Backup, "Backup"), (Tab::Snapshots, "Snapshots"), (Tab::Settings, "Einstellungen"), (Tab::Schedule, "Zeitplan")] {
+            ui.weak(format!("v{}", env!("CARGO_PKG_VERSION")));
+            for (t, name) in [(Tab::Backup, "Backup"), (Tab::Snapshots, "Snapshots"), (Tab::Settings, "Einstellungen"), (Tab::Schedule, "Zeitplan"), (Tab::About, "Info")] {
                 if ui.selectable_label(self.tab == t, name).clicked() {
                     self.tab = t;
                     self.status.clear();
@@ -406,6 +529,7 @@ impl eframe::App for App {
             Tab::Snapshots => self.snapshots_tab(ui),
             Tab::Settings => self.settings_tab(ui),
             Tab::Schedule => self.schedule_tab(ui),
+            Tab::About => self.about_tab(ui),
         }
     }
 }
