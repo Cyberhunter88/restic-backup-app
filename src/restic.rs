@@ -381,6 +381,46 @@ mod tests {
     }
 
     #[test]
+    fn excludes_are_applied() {
+        if Command::new("restic").arg("version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let src = d.path().join("src");
+        for dir in ["node_modules", "nb", "cache"] {
+            std::fs::create_dir_all(src.join(dir)).unwrap();
+        }
+        std::fs::write(src.join("keep.txt"), "ok").unwrap();
+        std::fs::write(src.join("skip.tmp"), "x").unwrap();
+        std::fs::write(src.join("node_modules").join("x.js"), "x").unwrap();
+        std::fs::write(src.join("nb").join(".nobackup"), "").unwrap();
+        std::fs::write(src.join("nb").join("y.txt"), "x").unwrap();
+        std::fs::write(src.join("cache").join("CACHEDIR.TAG"), "Signature: 8a477f597d28d172789f06886806bc55").unwrap();
+        std::fs::write(src.join("cache").join("z.txt"), "x").unwrap();
+        std::fs::write(src.join("big.bin"), vec![1u8; 2 * 1024 * 1024]).unwrap();
+        let r = Restic { bin: "restic".into(), repo: d.path().join("repo").to_string_lossy().into(), password: "pw".into() };
+        r.init().unwrap();
+        let (srcs, ex, nb) = (vec![src.to_string_lossy().into_owned()], vec!["*.tmp".to_string(), "node_modules".to_string()], vec![".nobackup".to_string()]);
+        r.backup(
+            &BackupOptions { sources: &srcs, excludes: &ex, exclude_caches: true, exclude_if_present: &nb, exclude_larger_than: "1M", host: "testhost" },
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+        let snaps = r.snapshots().unwrap();
+        assert_eq!(snaps[0].hostname, "testhost");
+        let files: Vec<String> = parse_ls(&r.run(&["ls".into(), "--json".into(), snaps[0].id.clone()]).unwrap())
+            .into_iter()
+            .filter(|n| n.kind == "file")
+            .map(|n| n.name)
+            .collect();
+        assert!(files.contains(&"keep.txt".to_string()), "{files:?}");
+        for gone in ["skip.tmp", "x.js", "y.txt", "z.txt", "big.bin"] {
+            assert!(!files.contains(&gone.to_string()), "{gone} sollte ausgeschlossen sein: {files:?}");
+        }
+    }
+
+    #[test]
     fn wrong_password_is_error() {
         if Command::new("restic").arg("version").output().is_err() {
             return;

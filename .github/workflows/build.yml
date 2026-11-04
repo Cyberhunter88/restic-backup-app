@@ -54,7 +54,14 @@ jobs:
         shell: pwsh
         run: |
           choco install restic innosetup -y
-          Copy-Item (Get-Command restic).Source packaging\windows\restic.exe
+          # Echtes restic.exe laden (der choco-Shim zeigt auf einen Pfad, den es beim Nutzer nicht gibt)
+          gh release download --repo restic/restic --pattern '*_windows_amd64.zip' --dir restic-dl
+          Expand-Archive restic-dl\*.zip -DestinationPath restic-dl\x
+          Copy-Item (Get-ChildItem restic-dl\x -Filter *.exe | Select-Object -First 1).FullName packaging\windows\restic.exe
+          if ((Get-Item packaging\windows\restic.exe).Length -lt 5MB) { throw "restic.exe zu klein - Shim statt Binary?" }
+          & packaging\windows\restic.exe version
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - run: cargo test --release
       - run: cargo build --release

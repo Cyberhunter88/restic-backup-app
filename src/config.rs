@@ -56,12 +56,23 @@ pub const COMMON_EXCLUDES: &[&str] = &[
     "node_modules", "target", ".cache", "*.tmp", "Thumbs.db", "$RECYCLE.BIN", "pagefile.sys", "hiberfil.sys", "System Volume Information",
 ];
 
+fn restic_works(p: &std::path::Path) -> bool {
+    let mut c = std::process::Command::new(p);
+    c.arg("version");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000);
+    }
+    c.output().map(|o| o.status.success()).unwrap_or(false)
+}
+
 /// Bevorzugt ein neben der Anwendung liegendes restic, sonst das aus dem PATH.
 pub fn default_restic_bin() -> String {
     let name = if cfg!(windows) { "restic.exe" } else { "restic" };
     if let Ok(exe) = std::env::current_exe() {
         if let Some(p) = exe.parent().map(|d| d.join(name)) {
-            if p.exists() {
+            if p.exists() && restic_works(&p) {
                 return p.to_string_lossy().into_owned();
             }
         }

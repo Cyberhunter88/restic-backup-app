@@ -22,7 +22,7 @@ Die aktuellen Pakete stehen unter [Releases](../../releases/latest).
 | Andere Linux | `restic-backup-app-<version>-x86_64.AppImage` | `chmod +x` und starten; `restic` und `cifs-utils` müssen installiert sein |
 
 ## Update
-- In der App: Tab **Info → Nach Updates suchen**, dann **Download-Seite öffnen**.
+- In der App: Tab **Info → Neue Versionen ansehen** öffnet die Releases-Seite (das Repo ist privat, deshalb ist dafür die GitHub-Anmeldung im Browser nötig).
 - **Windows:** neues Setup einfach über die alte Installation starten. Einstellungen und Passwörter bleiben erhalten.
 - **Debian/Ubuntu:** neue `.deb` mit `sudo apt install ./restic-backup-app_*.deb` installieren.
 - **AppImage:** neue Datei herunterladen und die alte ersetzen.
