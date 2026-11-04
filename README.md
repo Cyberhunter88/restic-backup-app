@@ -48,7 +48,7 @@ Voraussetzungen: Rust (stable), restic im PATH (für die Integrationstests). Lin
 2. Committen, pushen, Pull Request gegen `master` öffnen.
 3. Der Build-Workflow (Tests, Linux- und Windows-Pakete) muss grün sein, dann wird gemerged.
 
-`master` ist durch Branch-Protection geschützt (PR und erfolgreicher Build erforderlich).
+Einmalig nach dem Klonen aktivieren: `git config core.hooksPath .githooks` – der `pre-push`-Hook blockiert Pushes direkt auf `master`. (GitHub-Branch-Protection ist bei privaten Repos im Free-Plan nicht verfügbar; sie lässt sich nachrüsten, sobald das Repo öffentlich ist oder ein Pro-Plan vorhanden ist.)
 
 ### Release
 1. Branch: Version in `Cargo.toml` erhöhen und `CHANGELOG.md` ergänzen, PR mergen.
