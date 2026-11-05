@@ -70,6 +70,8 @@ pub struct App {
     diff_msg: String,
     /// Nach einem Backup die Repository-Daten neu laden (braucht den egui-Kontext)
     pending_overview: bool,
+    tray: Option<crate::tray::Tray>,
+    quitting: bool,
     snap_filter: String,
     snap_folder: Option<String>,
     snap_range: ui::SnapRange,
@@ -112,7 +114,7 @@ fn secret_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(ctx: &egui::Context) -> Self {
         let (tx, rx) = channel();
         let cfg = Config::load().unwrap_or_default();
         Self {
@@ -141,6 +143,8 @@ impl App {
             diff: None,
             diff_msg: String::new(),
             pending_overview: false,
+            tray: crate::tray::start(ctx.clone()),
+            quitting: false,
             snap_filter: String::new(),
             snap_folder: None,
             snap_range: ui::SnapRange::All,
@@ -151,6 +155,36 @@ impl App {
             restored_to: None,
             status: String::new(),
             cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn has_tray(&self) -> bool {
+        self.tray.is_some()
+    }
+
+    /// Tray-Menü bedienen und das Schließen des Fensters in den Tray umleiten.
+    fn handle_tray(&mut self, ctx: &egui::Context) {
+        use crate::tray::TrayCmd;
+        let Some(tray) = &self.tray else { return };
+        let cmds: Vec<TrayCmd> = tray.rx.try_iter().collect();
+        for c in cmds {
+            match c {
+                TrayCmd::Open => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                TrayCmd::Backup if !self.busy && self.cfg.is_ready() => self.start_backup(ctx),
+                TrayCmd::Backup => {}
+                TrayCmd::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+        if !self.quitting && ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
     }
 
@@ -1026,12 +1060,17 @@ impl Drop for App {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    // `logic` läuft auch bei verstecktem Fenster (Tray): Meldungen der Threads und Tray-Menü werden hier verarbeitet
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
         if self.pending_overview && !self.busy {
             self.pending_overview = false;
-            self.load_overview(&ui.ctx().clone());
+            self.load_overview(ctx);
         }
+        self.handle_tray(ctx);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.sidebar(ui);
         egui::CentralPanel::default().frame(Frame::new().fill(ui::BG).inner_margin(Margin::same(22))).show(ui, |ui| match self.tab {
             Tab::Backup => self.backup_tab(ui),

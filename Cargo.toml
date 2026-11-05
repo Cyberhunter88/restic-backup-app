@@ -17,9 +17,13 @@ rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 toml = "1.1.8"
+tray-icon = "0.26.1"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
 
 [dev-dependencies]
 tempfile = "3.27.0"

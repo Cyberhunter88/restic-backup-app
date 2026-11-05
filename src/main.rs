@@ -10,6 +10,7 @@ mod restic;
 mod schedule;
 mod secrets;
 mod smb;
+mod tray;
 mod ui;
 mod update;
 
@@ -57,10 +58,13 @@ fn main() -> anyhow::Result<()> {
         eframe::NativeOptions { viewport, ..Default::default() },
         Box::new(|cc| {
             ui::apply_theme(&cc.egui_ctx);
+            let app = app::App::new(&cc.egui_ctx);
             if cli.autostart {
-                cc.egui_ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Minimized(true));
+                // Mit Tray ganz verstecken, sonst minimieren
+                let cmd = if app.has_tray() { eframe::egui::ViewportCommand::Visible(false) } else { eframe::egui::ViewportCommand::Minimized(true) };
+                cc.egui_ctx.send_viewport_cmd(cmd);
             }
-            Ok(Box::new(app::App::new()))
+            Ok(Box::new(app))
         }),
     )
     .map_err(|e| anyhow::anyhow!("GUI-Fehler: {e}"))
