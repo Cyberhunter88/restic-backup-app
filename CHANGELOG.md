@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unveröffentlicht]
+## [0.3.3]
 
 ### Behoben
 - Windows: Das Programmsymbol ist jetzt in der .exe eingebettet (vorher zeigten Explorer, Taskleiste und Verknüpfungen das Standard-Symbol).
