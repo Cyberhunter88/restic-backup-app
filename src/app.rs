@@ -570,21 +570,16 @@ impl App {
             });
 
             ui::card(ui, Some("Ausschlüsse"), |ui| {
-                ui::hint(ui, "Muster wie *.tmp oder node_modules");
+                ui::hint(ui, "Muster wie *.tmp oder **/node_modules – eine Liste mit einem Muster pro Zeile kann direkt eingefügt werden");
                 removable_list(ui, &mut self.cfg.excludes);
+                ui.add(egui::TextEdit::multiline(&mut self.new_exclude).hint_text("Muster hier einfügen (ein Muster pro Zeile)").desired_rows(3).desired_width(f32::INFINITY));
                 ui.horizontal(|ui| {
-                    let r = ui.add(egui::TextEdit::singleline(&mut self.new_exclude).hint_text("Neues Muster").desired_width(220.0));
-                    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if (ui.button("Hinzufügen").clicked() || enter) && !self.new_exclude.trim().is_empty() {
-                        self.cfg.excludes.push(self.new_exclude.trim().to_string());
+                    if ui.button("Hinzufügen").clicked() && !self.new_exclude.trim().is_empty() {
+                        crate::config::add_excludes(&mut self.cfg.excludes, &self.new_exclude);
                         self.new_exclude.clear();
                     }
                     if ui.button("Übliche Ausschlüsse").clicked() {
-                        for p in crate::config::COMMON_EXCLUDES {
-                            if !self.cfg.excludes.iter().any(|e| e == p) {
-                                self.cfg.excludes.push((*p).to_string());
-                            }
-                        }
+                        crate::config::add_excludes(&mut self.cfg.excludes, &crate::config::COMMON_EXCLUDES.join("\n"));
                     }
                 });
                 ui.separator();
