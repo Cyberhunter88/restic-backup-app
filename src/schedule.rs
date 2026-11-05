@@ -10,6 +10,19 @@ pub fn parse_time(t: &str) -> Result<(u32, u32)> {
     Ok((h, m))
 }
 
+/// Pfad, den der Zeitplan startet. Bei einem AppImage ist `current_exe()` ein temporärer
+/// Mount-Pfad (`/tmp/.mount_…`), der nach dem Beenden verschwindet – dort zählt `$APPIMAGE`.
+fn exe_from(appimage: Option<String>, current: std::path::PathBuf) -> std::path::PathBuf {
+    match appimage {
+        Some(p) if !p.is_empty() => p.into(),
+        _ => current,
+    }
+}
+
+fn exe_path() -> Result<std::path::PathBuf> {
+    Ok(exe_from(std::env::var("APPIMAGE").ok(), std::env::current_exe()?))
+}
+
 const DAYS_SYSTEMD: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 #[cfg_attr(unix, allow(dead_code))]
 const DAYS_WINDOWS: [&str; 7] = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
@@ -42,7 +55,7 @@ pub fn calendar_lines(times: &[String], days: &[bool; 7]) -> Result<Vec<String>>
 #[cfg(unix)]
 pub fn install(times: &[String], days: &[bool; 7]) -> Result<()> {
     let calendar = calendar_lines(times, days)?.join("\n");
-    let exe = std::env::current_exe()?;
+    let exe = exe_path()?;
     let dir = directories::BaseDirs::new().context("Kein Home")?.config_dir().join("systemd/user");
     std::fs::create_dir_all(&dir)?;
     std::fs::write(
@@ -69,7 +82,7 @@ pub fn install(times: &[String], days: &[bool; 7]) -> Result<()> {
         bail!("Kein Wochentag gewählt");
     }
     let parsed = parsed_times(times)?;
-    let exe = std::env::current_exe()?;
+    let exe = exe_path()?;
     remove().ok();
     let cmd = format!("\"{}\" --run-backup", exe.display());
     let all = days.iter().all(|d| *d);
@@ -111,6 +124,14 @@ mod tests {
         assert_eq!(parse_time("02:30").unwrap(), (2, 30));
         assert!(parse_time("25:00").is_err());
         assert!(parse_time("abc").is_err());
+    }
+
+    #[test]
+    fn appimage_path_wins() {
+        let cur = std::path::PathBuf::from("/tmp/.mount_x/usr/bin/app");
+        assert_eq!(exe_from(Some("/home/u/App.AppImage".into()), cur.clone()), std::path::PathBuf::from("/home/u/App.AppImage"));
+        assert_eq!(exe_from(Some(String::new()), cur.clone()), cur);
+        assert_eq!(exe_from(None, cur.clone()), cur);
     }
 
     #[test]

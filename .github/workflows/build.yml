@@ -1,10 +1,17 @@
 name: build
 
+# Ein Build pro Änderung:
+# - Feature-Branches bauen nur über ihren Pull Request (kein zusätzlicher Push-Build)
+# - master wird nach dem Merge einmal geprüft; Release-Commits ("Release v…") werden nicht
+#   noch einmal gebaut, da der Release-Workflow sie schon gebaut hat
+# - reine Doku-Änderungen lösen keinen Build aus
 on:
   push:
-    branches-ignore: ["release/**"]
+    branches: [master]
     tags: ["v*"]
+    paths-ignore: ["**.md", ".githooks/**"]
   pull_request:
+    paths-ignore: ["**.md", ".githooks/**"]
   workflow_dispatch:
   # Wird vom Release-Workflow aufgerufen (Build eines Release-Branches)
   workflow_call:
@@ -16,8 +23,14 @@ on:
 permissions:
   contents: write
 
+# Neuere Läufe derselben Änderung ersetzen ältere (nicht bei Tags und nicht beim Release-Aufruf)
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) }}
+
 jobs:
   build:
+    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/') || !startsWith(github.event.head_commit.message, 'Release v')
     strategy:
       fail-fast: false
       matrix:
@@ -103,7 +116,7 @@ jobs:
 
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

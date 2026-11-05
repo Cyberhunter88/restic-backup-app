@@ -1,0 +1,27 @@
+# Maintainer: Cyberhunter88
+# Baut das Paket aus dem Repo, in dem diese Datei liegt (kein Download nötig, das Repo ist privat).
+# Installieren/Aktualisieren: packaging/arch/install.sh
+_root="$(realpath "$startdir/../..")"
+pkgname=restic-backup-app
+pkgver="$(grep -m1 '^version' "$_root/Cargo.toml" | cut -d'"' -f2)"
+pkgrel=1
+pkgdesc='restic-Backup auf NAS (SMB) mit Zeitplan, Restore und Retention'
+arch=('x86_64')
+url='https://github.com/Cyberhunter88/restic-backup-app'
+license=('MIT')
+depends=('restic' 'cifs-utils' 'polkit' 'gtk3' 'libxkbcommon' 'wayland' 'dbus')
+makedepends=('cargo')
+options=('!lto')
+
+build() {
+  cd "$_root"
+  export CARGO_TARGET_DIR="$srcdir/target"
+  cargo build --release --locked
+}
+
+package() {
+  cd "$_root"
+  install -Dm755 "$srcdir/target/release/restic-backup-app" "$pkgdir/usr/bin/restic-backup-app"
+  install -Dm644 packaging/linux/restic-backup-app.desktop "$pkgdir/usr/share/applications/restic-backup-app.desktop"
+  install -Dm644 packaging/icon.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/restic-backup-app.png"
+}
