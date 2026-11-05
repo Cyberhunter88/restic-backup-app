@@ -48,6 +48,7 @@ pub struct App {
     new_exclude: String,
     new_marker: String,
     new_time: String,
+    autostart: bool,
     repo_msg: String,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
@@ -110,6 +111,7 @@ impl App {
             new_exclude: String::new(),
             new_marker: String::new(),
             new_time: "12:00".into(),
+            autostart: crate::autostart::is_enabled(),
             repo_msg: String::new(),
             tx,
             rx,
@@ -274,6 +276,12 @@ impl App {
                             ui.horizontal(|ui| {
                                 ui::badge(ui, if ok { "Erfolgreich" } else { "Fehler" }, if ok { OK } else { ERR });
                                 ui.label(head.split(" – ").next().unwrap_or(head));
+                                if let Some((age, overdue)) = ui::age_text(head, chrono::Local::now().naive_local()) {
+                                    ui.label(RichText::new(format!("({age})")).color(if overdue { WARN } else { MUTED }));
+                                    if overdue {
+                                        ui::badge(ui, "Überfällig", WARN);
+                                    }
+                                }
                             });
                         }
                         None => ui::badge(ui, "Noch kein Backup", MUTED),
@@ -721,6 +729,21 @@ impl App {
                 ui::hint(ui, "Verpasste Läufe (Rechner war aus) holt der Zeitplan beim nächsten Start nach. Änderungen gelten erst nach „Zeitplan aktivieren“.");
                 #[cfg(windows)]
                 ui::hint(ui, "Der Taskplaner-Task läuft unter deinem Benutzer und nutzt die Freigabe direkt per UNC-Pfad.");
+            });
+            ui::card(ui, Some("Autostart"), |ui| {
+                if ui.checkbox(&mut self.autostart, "Programm beim Anmelden automatisch starten (minimiert)").changed() {
+                    self.status = match crate::autostart::set(self.autostart) {
+                        Ok(()) if self.autostart => "Autostart eingerichtet.".into(),
+                        Ok(()) => "Autostart entfernt.".into(),
+                        Err(e) => {
+                            self.autostart = crate::autostart::is_enabled();
+                            format!("FEHLER: {e:#}")
+                        }
+                    };
+                }
+                ui::hint(ui, "Der Zeitplan läuft unabhängig davon. War der PC zur geplanten Zeit aus, wird das Backup beim nächsten Anmelden bzw. Start nachgeholt (einmal, auch nach mehreren Tagen). Ist das NAS dann noch nicht erreichbar, versucht der Lauf es bis zu 5 Minuten lang erneut.");
+                #[cfg(unix)]
+                ui::hint(ui, "Linux: Der Timer läuft nur bei angemeldetem Benutzer. Für Backups auch ohne Anmeldung: sudo loginctl enable-linger $USER");
             });
             #[cfg(unix)]
             ui::card(ui, Some("Automatisches Einbinden (Linux)"), |ui| {

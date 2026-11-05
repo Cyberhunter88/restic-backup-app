@@ -18,6 +18,25 @@ pub fn open(cfg: &Config) -> Result<Restic> {
     Ok(Restic { bin: cfg.restic_bin.clone(), repo: smb::repo_path(cfg)?, password: repo_pw })
 }
 
+/// Wie `open`, versucht es aber mehrfach (für Zeitplan-Läufe kurz nach dem Anmelden, wenn das
+/// Netzwerk oder das NAS noch nicht erreichbar ist).
+pub fn open_with_retry(cfg: &Config, attempts: u32, wait: std::time::Duration, mut log: impl FnMut(String)) -> Result<Restic> {
+    let mut last = None;
+    for i in 1..=attempts {
+        match open(cfg) {
+            Ok(r) => return Ok(r),
+            Err(e) => {
+                if i < attempts {
+                    log(format!("Warnung: NAS nicht erreichbar (Versuch {i}/{attempts}): {e:#} – neuer Versuch in {} s", wait.as_secs()));
+                    std::thread::sleep(wait);
+                }
+                last = Some(e);
+            }
+        }
+    }
+    Err(last.context("Keine Verbindungsversuche")?)
+}
+
 /// Trennt die Freigabe, falls die App sie eingebunden hat.
 pub fn unmount_if_ours(cfg: &Config) -> Result<()> {
     if MOUNTED_BY_APP.swap(false, Ordering::Relaxed) {
@@ -41,7 +60,8 @@ pub fn describe_repo(cfg: &Config) -> Result<String> {
 pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log: impl FnMut(String), on_event: impl FnMut(BackupEvent)) -> Result<BackupOutcome> {
     cfg.validate()?;
     log("Verbinde mit NAS …".into());
-    let r = open(cfg)?;
+    // Zeitplan-Lauf (headless): bis zu 5 Versuche à 60 s, GUI-Lauf: sofort melden
+    let r = if keep_mounted { open(cfg)? } else { open_with_retry(cfg, 5, std::time::Duration::from_secs(60), &mut log)? };
     let host = local_hostname();
     let result = (|| {
         match r.probe() {

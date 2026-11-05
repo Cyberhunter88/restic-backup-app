@@ -9,6 +9,7 @@ Desktop-App für [restic](https://restic.net)-Backups auf ein NAS (SMB-Freigabe)
 - Zeitplan mit mehreren Uhrzeiten pro Tag und Wochentagen (Windows: Aufgabenplanung, Linux: systemd-User-Timer), Verlauf der letzten Läufe
 - Snapshots durchsuchen, Dateien oder ganze Snapshots wiederherstellen
 - Aufbewahrungsregeln (täglich/wöchentlich/monatlich) mit automatischem `forget --prune`
+- Autostart beim Anmelden (optional); verpasste Zeitplan-Läufe werden nachgeholt, auch nach mehreren Tagen Pause
 - Passwörter liegen im System-Schlüsselbund, nicht in der Konfigurationsdatei
 
 ## Installation

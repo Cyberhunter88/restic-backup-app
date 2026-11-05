@@ -3,6 +3,10 @@
 ## [Unveröffentlicht]
 
 ### Neu
+- Autostart: Option „Programm beim Anmelden automatisch starten (minimiert)“ im Tab Zeitplan (Linux: `~/.config/autostart`, Windows: Run-Schlüssel).
+- Verpasste Backups werden nachgeholt, auch wenn der PC mehrere Tage aus war: Linux über `Persistent=true` im Timer, Windows über „StartWhenAvailable“ (Task jetzt per PowerShell mit einem Trigger je Uhrzeit angelegt).
+- Zeitplan-Läufe versuchen die NAS-Verbindung bis zu 5-mal (je 60 s Abstand), falls das Netzwerk direkt nach dem Start noch fehlt.
+- Backup-Tab zeigt das Alter des letzten Laufs und warnt ab 2 Tagen („Überfällig“).
 - Arch Linux: `packaging/arch/PKGBUILD` und `install.sh` zum Installieren und Aktualisieren als pacman-Paket.
 - Zeitplan: mehrere Uhrzeiten pro Tag (Schnellauswahl 1×/2× täglich, alle 6/3 Stunden, stündlich) und Wochentage wählbar. Linux: mehrere `OnCalendar`-Einträge im systemd-Timer; Windows: ein Task je Uhrzeit. Ältere Einzel-Uhrzeit wird übernommen.
 - Lokaler Verlauf der letzten Läufe (`history.tsv` im Datenverzeichnis, max. 200 Einträge), im Backup-Tab sichtbar – auch für Läufe des Zeitplans.

@@ -2,6 +2,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod app;
+mod autostart;
 mod config;
 mod job;
 mod restic;
@@ -19,6 +20,9 @@ struct Cli {
     /// Backup ohne GUI ausführen (für Zeitplan)
     #[arg(long)]
     run_backup: bool,
+    /// Beim Anmelden gestartet: Fenster minimiert öffnen
+    #[arg(long)]
+    autostart: bool,
 }
 
 fn run_headless() -> anyhow::Result<()> {
@@ -51,6 +55,9 @@ fn main() -> anyhow::Result<()> {
         eframe::NativeOptions { viewport, ..Default::default() },
         Box::new(|cc| {
             ui::apply_theme(&cc.egui_ctx);
+            if cli.autostart {
+                cc.egui_ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Minimized(true));
+            }
             Ok(Box::new(app::App::new()))
         }),
     )
