@@ -214,6 +214,19 @@ impl Config {
         Ok(())
     }
 
+    /// Schreibt die Einstellungen in eine Datei (ohne Passwörter, die liegen nur im Schlüsselbund).
+    pub fn export_to(&self, path: &std::path::Path) -> Result<()> {
+        std::fs::write(path, toml::to_string_pretty(self)?).with_context(|| format!("Schreiben von {}", path.display()))
+    }
+
+    /// Liest eine exportierte Konfiguration und prüft sie.
+    pub fn import_from(path: &std::path::Path) -> Result<Self> {
+        let s = std::fs::read_to_string(path).with_context(|| format!("Lesen von {}", path.display()))?;
+        let c = Self::parse(&s).context("Datei ist keine gültige Konfiguration")?;
+        c.validate()?;
+        Ok(c)
+    }
+
     /// Prüft die Eingaben auf Konsistenz.
     pub fn validate(&self) -> Result<()> {
         if self.schedule_times.is_empty() {
@@ -255,6 +268,21 @@ mod tests {
         c.sources.push("/home/x".into());
         let s = toml::to_string_pretty(&c).unwrap();
         assert_eq!(toml::from_str::<Config>(&s).unwrap(), c);
+    }
+
+    #[test]
+    fn export_import_roundtrip() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("export.toml");
+        let mut c = Config::default();
+        c.host = "nas".into();
+        c.sources = vec!["/a".into(), "/b".into()];
+        c.export_to(&p).unwrap();
+        assert_eq!(Config::import_from(&p).unwrap(), c);
+        std::fs::write(&p, "das ist {kein toml").unwrap();
+        assert!(Config::import_from(&p).is_err());
+        std::fs::write(&p, "schedule_times = []").unwrap();
+        assert!(Config::import_from(&p).is_err());
     }
 
     #[test]
