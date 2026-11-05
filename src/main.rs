@@ -5,6 +5,7 @@ mod app;
 mod autostart;
 mod config;
 mod job;
+mod notify;
 mod restic;
 mod schedule;
 mod secrets;
@@ -30,9 +31,10 @@ fn run_headless() -> anyhow::Result<()> {
     let mut lines: Vec<String> = vec![];
     let result = job::run_backup(&cfg, false, &std::sync::atomic::AtomicBool::new(false), |m| lines.push(m), |_| {});
     match &result {
-        Ok(_) => lines.push("Backup abgeschlossen.".into()),
+        Ok(o) => lines.push(if o.warnings { "Backup mit Warnungen abgeschlossen." } else { "Backup abgeschlossen." }.into()),
         Err(e) => lines.push(format!("FEHLER: {e:#}")),
     }
+    notify::backup_finished(result.as_ref().is_ok_and(|o| o.warnings), result.as_ref().err().map(|e| format!("{e:#}")).as_deref());
     let _ = config::write_last_run(result.is_ok(), &lines);
     for l in &lines {
         println!("{l}");

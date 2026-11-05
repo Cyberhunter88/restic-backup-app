@@ -13,7 +13,7 @@ use std::sync::Arc;
 enum Msg {
     Log(String),
     Event(BackupEvent),
-    BackupDone(Result<(), String>),
+    BackupDone(Result<bool, String>),
     Snaps(Result<Vec<Snapshot>, String>),
     Nodes(Result<Vec<Node>, String>),
     Info(Result<String, String>),
@@ -176,8 +176,10 @@ impl App {
                 Msg::BackupDone(r) => {
                     self.busy = false;
                     let ok = r.is_ok();
+                    crate::notify::backup_finished(matches!(r, Ok(true)), r.as_ref().err().map(String::as_str));
                     self.log.push(match r {
-                        Ok(()) => "Backup erfolgreich.".into(),
+                        Ok(false) => "Backup erfolgreich.".into(),
+                        Ok(true) => "Backup mit Warnungen abgeschlossen.".into(),
                         Err(e) => format!("FEHLER: {e}"),
                     });
                     let _ = crate::config::write_last_run(ok, &self.log);
@@ -300,7 +302,7 @@ impl App {
         self.spawn(ctx, move |tx| {
             let (t1, t2) = (tx.clone(), tx.clone());
             let r = job::run_backup(&cfg, true, &cancel, move |m| drop(t1.send(Msg::Log(m))), move |e| drop(t2.send(Msg::Event(e))));
-            let _ = tx.send(Msg::BackupDone(r.map(|_| ()).map_err(|e| format!("{e:#}"))));
+            let _ = tx.send(Msg::BackupDone(r.map(|o| o.warnings).map_err(|e| format!("{e:#}"))));
         });
     }
 
