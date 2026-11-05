@@ -9,6 +9,7 @@ Desktop-App für [restic](https://restic.net)-Backups auf ein NAS (SMB-Freigabe)
 - Zeitplan mit mehreren Uhrzeiten pro Tag und Wochentagen (Windows: Aufgabenplanung, Linux: systemd-User-Timer), Verlauf der letzten Läufe
 - Snapshots durchsuchen, Dateien oder ganze Snapshots wiederherstellen
 - Aufbewahrungsregeln (täglich/wöchentlich/monatlich) mit automatischem `forget --prune`
+- Autostart beim Anmelden (optional); verpasste Zeitplan-Läufe werden nachgeholt, auch nach mehreren Tagen Pause
 - Passwörter liegen im System-Schlüsselbund, nicht in der Konfigurationsdatei
 
 ## Installation
@@ -19,9 +20,19 @@ Die aktuellen Pakete stehen unter [Releases](../../releases/latest).
 | Windows | `restic-backup-app-setup-<version>.exe` | Installer inkl. restic, Startmenü-Eintrag |
 | Windows | `restic-backup-app-windows-x86_64.exe` | portabel, restic muss im PATH liegen |
 | Debian/Ubuntu | `restic-backup-app_<version>_amd64.deb` | `sudo apt install ./restic-backup-app_*.deb` (zieht `restic`, `cifs-utils`, `policykit-1` nach) |
+| Arch Linux | `packaging/arch/install.sh` | baut und installiert ein pacman-Paket, siehe unten |
 | Andere Linux | `restic-backup-app-<version>-x86_64.AppImage` | `chmod +x` und starten; `restic` und `cifs-utils` müssen installiert sein |
 
+### Arch Linux
+```
+git clone https://github.com/Cyberhunter88/restic-backup-app.git
+cd restic-backup-app
+packaging/arch/install.sh
+```
+Das Skript holt die Build-Abhängigkeiten, baut ein pacman-Paket (`restic`, `cifs-utils`, `polkit`, `gtk3` werden mitinstalliert) und installiert es nach `/usr/bin` mit Menüeintrag. Update: dasselbe Skript noch einmal ausführen (macht `git pull` und baut neu); entfernen mit `sudo pacman -R restic-backup-app`. Das Repo ist privat, daher muss `git clone` bzw. `git pull` angemeldet sein (SSH-Key oder `gh auth login`).
+
 ## Update
+- **Arch:** `packaging/arch/install.sh` im geklonten Repo.
 - In der App: Tab **Info → Neue Versionen ansehen** öffnet die Releases-Seite (das Repo ist privat, deshalb ist dafür die GitHub-Anmeldung im Browser nötig).
 - **Windows:** neues Setup einfach über die alte Installation starten. Einstellungen und Passwörter bleiben erhalten.
 - **Debian/Ubuntu:** neue `.deb` mit `sudo apt install ./restic-backup-app_*.deb` installieren.

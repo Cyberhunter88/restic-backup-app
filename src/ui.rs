@@ -122,6 +122,23 @@ pub fn short_time(iso: &str) -> String {
     }
 }
 
+/// Alter des letzten Laufs aus der Kopfzeile des Protokolls (`2026-11-05 08:39:31 – ERFOLGREICH`)
+/// als Text und Hinweis, ob er überfällig ist (älter als 2 Tage).
+pub fn age_text(head: &str, now: chrono::NaiveDateTime) -> Option<(String, bool)> {
+    let ts = chrono::NaiveDateTime::parse_from_str(head.get(..19)?, "%Y-%m-%d %H:%M:%S").ok()?;
+    let d = now.signed_duration_since(ts);
+    let text = if d.num_minutes() < 1 {
+        "gerade eben".to_string()
+    } else if d.num_hours() < 1 {
+        format!("vor {} Min.", d.num_minutes())
+    } else if d.num_hours() < 48 {
+        format!("vor {} Std.", d.num_hours())
+    } else {
+        format!("vor {} Tagen", d.num_days())
+    };
+    Some((text, d.num_hours() >= 48))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,6 +155,15 @@ mod tests {
     fn zeit_kurz() {
         assert_eq!(short_time("kaputt-und-lang-genug-zum-kuerzen"), "kaputt-und-lang-");
         assert!(short_time("2026-11-05T02:00:01+00:00").contains("2026"));
+    }
+
+    #[test]
+    fn alter_des_laufs() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        assert_eq!(age_text("2026-11-05 11:30:00 – ERFOLGREICH", now), Some(("vor 30 Min.".into(), false)));
+        assert_eq!(age_text("2026-11-04 12:00:00 – FEHLER", now), Some(("vor 24 Std.".into(), false)));
+        assert_eq!(age_text("2026-11-02 12:00:00 – ERFOLGREICH", now), Some(("vor 3 Tagen".into(), true)));
+        assert_eq!(age_text("kaputt", now), None);
     }
 
     #[test]
