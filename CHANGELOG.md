@@ -7,6 +7,7 @@
 - „Übliche Ausschlüsse“ deckt deutlich mehr ab: Temp-/Cache-Ordner, AppData (Temp, INetCache, Packages, Browser-Caches), `NTUSER.DAT*`, Windows-Systemdateien sowie Linux-Papierkorb und -Caches.
 
 ### Behoben
+- Windows: Das Programmsymbol ist jetzt in der .exe eingebettet (vorher zeigten Explorer, Taskleiste und Verknüpfungen das Standard-Symbol).
 - Windows: Zeitplan aktivieren schlug bei mehreren Uhrzeiten fehl („New-ScheduledTaskTrigger … System.Object[]“); die Trigger werden jetzt korrekt geklammert.
 - Backup: Meldet restic nach geschriebenem Snapshot einen Fehlercode (z. B. „Zugriff verweigert“ bei gesperrten Ordnern unter Windows), gilt der Lauf als Warnung statt als Fehler.
 
