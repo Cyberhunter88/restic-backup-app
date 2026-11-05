@@ -64,6 +64,7 @@ pub struct App {
     snaps_loaded: bool,
     overview: Option<job::RepoOverview>,
     overview_msg: String,
+    last_check: Option<crate::config::LastCheck>,
     compare_with: Option<String>,
     diff: Option<Vec<DiffEntry>>,
     diff_msg: String,
@@ -135,6 +136,7 @@ impl App {
             snaps_loaded: false,
             overview: None,
             overview_msg: String::new(),
+            last_check: crate::config::read_last_check(),
             compare_with: None,
             diff: None,
             diff_msg: String::new(),
@@ -181,6 +183,7 @@ impl App {
                     let _ = crate::config::write_last_run(ok, &self.log);
                     self.last_run = crate::config::read_last_run();
                     self.history = crate::config::read_history(8);
+                    self.last_check = crate::config::read_last_check();
                     self.snaps_loaded = false;
                     if self.overview.is_some() {
                         self.pending_overview = true;
@@ -230,6 +233,7 @@ impl App {
                 }
                 Msg::Info(r) => {
                     self.busy = false;
+                    self.last_check = crate::config::read_last_check();
                     self.status = r.unwrap_or_else(|e| format!("FEHLER: {e}"));
                 }
                 Msg::Restored(r) => {
@@ -381,6 +385,16 @@ impl App {
                     }
                 });
                 ui::status(ui, &self.overview_msg);
+                let now = chrono::Local::now().naive_local();
+                let due = crate::config::check_due(self.last_check.as_ref(), self.cfg.check_interval_days, now);
+                match &self.last_check {
+                    Some(c) => {
+                        let text = format!("Letzte Prüfung: {}{}", c.time.format("%d.%m.%Y %H:%M"), if c.ok { "" } else { " – FEHLGESCHLAGEN" });
+                        ui.label(RichText::new(text).color(if !c.ok { ERR } else if due { WARN } else { MUTED }).size(13.0));
+                    }
+                    None if self.cfg.check_interval_days > 0 => ui::hint(ui, "Noch keine Prüfung durchgeführt (läuft automatisch im Zeitplan-Lauf)."),
+                    None => {}
+                }
             });
         }
 
@@ -445,6 +459,7 @@ impl App {
                     self.status = "Prüfe Repository …".into();
                     self.spawn(&ctx, move |tx| {
                         let r = job::open(&cfg).and_then(|r| r.check());
+                        crate::config::write_last_check(r.is_ok());
                         let _ = tx.send(Msg::Info(r.map(|_| "Repository ist in Ordnung.".to_string()).map_err(|e| format!("{e:#}"))));
                     });
                 }
@@ -766,6 +781,17 @@ impl App {
                     ui.add(egui::DragValue::new(&mut self.cfg.keep_monthly).range(0..=999));
                 });
                 ui::hint(ui, "So viele Snapshots pro Zeitraum bleiben erhalten, ältere werden nach jedem Backup entfernt.");
+            });
+
+            ui::card(ui, Some("Integritätsprüfung"), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Alle");
+                    ui.add(egui::DragValue::new(&mut self.cfg.check_interval_days).range(0..=365));
+                    ui.label("Tage");
+                    ui.label("Anteil der Daten");
+                    ui.add(egui::DragValue::new(&mut self.cfg.check_subset_percent).range(1..=100).suffix(" %"));
+                });
+                ui::hint(ui, "Der Zeitplan-Lauf prüft nach dem Backup einen Teil der Repository-Daten (0 Tage = aus). Ein Fehler wird als Warnung gemeldet.");
             });
             });
         });

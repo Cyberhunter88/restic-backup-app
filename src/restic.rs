@@ -293,6 +293,11 @@ impl Restic {
         Ok(parse_diff(&self.run(&["diff".into(), "--json".into(), a.into(), b.into()])?))
     }
 
+    /// Prüft die Struktur und liest einen Teil der Daten (`--read-data-subset=N%`).
+    pub fn check_subset(&self, percent: u32) -> Result<()> {
+        self.run(&["check".into(), format!("--read-data-subset={percent}%")]).map(|_| ())
+    }
+
     pub fn check(&self) -> Result<()> {
         self.run(&Self::s(&["check"])).map(|_| ())
     }
