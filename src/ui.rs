@@ -132,6 +132,44 @@ pub fn short_time(iso: &str) -> String {
     }
 }
 
+/// Zeitraum-Filter für die Snapshot-Liste.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum SnapRange {
+    All,
+    Days7,
+    Days30,
+    Year,
+}
+
+impl SnapRange {
+    pub const ALL: [(SnapRange, &'static str); 4] = [(SnapRange::All, "Alle"), (SnapRange::Days7, "7 Tage"), (SnapRange::Days30, "30 Tage"), (SnapRange::Year, "1 Jahr")];
+
+    fn days(self) -> Option<i64> {
+        match self {
+            SnapRange::All => None,
+            SnapRange::Days7 => Some(7),
+            SnapRange::Days30 => Some(30),
+            SnapRange::Year => Some(365),
+        }
+    }
+}
+
+/// Passt ein Snapshot zu Textfilter, Ordner und Zeitraum? Alle Filter wirken zusammen (UND).
+pub fn snapshot_matches(s: &crate::restic::Snapshot, needle: &str, folder: Option<&str>, range: SnapRange, now: chrono::DateTime<chrono::Local>) -> bool {
+    if let Some(f) = folder {
+        if !s.paths.iter().any(|p| p == f) {
+            return false;
+        }
+    }
+    if let (Some(days), Ok(t)) = (range.days(), chrono::DateTime::parse_from_rfc3339(&s.time)) {
+        if now.signed_duration_since(t).num_days() >= days {
+            return false;
+        }
+    }
+    let needle = needle.to_lowercase();
+    needle.is_empty() || [short_time(&s.time), s.hostname.clone(), s.paths.join(", "), s.short_id.clone()].iter().any(|f| f.to_lowercase().contains(&needle))
+}
+
 /// Alter des letzten Laufs aus der Kopfzeile des Protokolls (`2026-11-05 08:39:31 – ERFOLGREICH`)
 /// als Text und Hinweis, ob er überfällig ist (älter als 2 Tage).
 pub fn age_text(head: &str, now: chrono::NaiveDateTime) -> Option<(String, bool)> {
@@ -174,6 +212,27 @@ mod tests {
         assert_eq!(age_text("2026-11-04 12:00:00 – FEHLER", now), Some(("vor 24 Std.".into(), false)));
         assert_eq!(age_text("2026-11-02 12:00:00 – ERFOLGREICH", now), Some(("vor 3 Tagen".into(), true)));
         assert_eq!(age_text("kaputt", now), None);
+    }
+
+    fn snap(time: &str, paths: &[&str]) -> crate::restic::Snapshot {
+        crate::restic::Snapshot { id: "abc123".into(), short_id: "abc123".into(), time: time.into(), hostname: "pc".into(), paths: paths.iter().map(|p| p.to_string()).collect() }
+    }
+
+    #[test]
+    fn snapshot_filter() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-05T12:00:00+00:00").unwrap().with_timezone(&chrono::Local);
+        let neu = snap("2026-11-04T12:00:00+00:00", &["/a"]);
+        let alt = snap("2026-08-01T12:00:00+00:00", &["/b"]);
+        assert!(snapshot_matches(&neu, "", None, SnapRange::All, now));
+        assert!(snapshot_matches(&neu, "", None, SnapRange::Days7, now));
+        assert!(!snapshot_matches(&alt, "", None, SnapRange::Days30, now));
+        assert!(snapshot_matches(&alt, "", None, SnapRange::Year, now));
+        assert!(snapshot_matches(&alt, "", Some("/b"), SnapRange::All, now));
+        assert!(!snapshot_matches(&alt, "", Some("/a"), SnapRange::All, now));
+        assert!(snapshot_matches(&neu, "PC", None, SnapRange::All, now));
+        assert!(!snapshot_matches(&neu, "xyz", None, SnapRange::All, now));
+        // kombiniert: Ordner passt, Text nicht
+        assert!(!snapshot_matches(&neu, "xyz", Some("/a"), SnapRange::All, now));
     }
 
     #[test]

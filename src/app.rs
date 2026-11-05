@@ -61,6 +61,8 @@ pub struct App {
     snapshots: Vec<Snapshot>,
     snaps_loaded: bool,
     snap_filter: String,
+    snap_folder: Option<String>,
+    snap_range: ui::SnapRange,
     selected: Option<String>,
     dir: String,
     nodes: Vec<Node>,
@@ -123,6 +125,8 @@ impl App {
             snapshots: vec![],
             snaps_loaded: false,
             snap_filter: String::new(),
+            snap_folder: None,
+            snap_range: ui::SnapRange::All,
             selected: None,
             dir: "/".into(),
             nodes: vec![],
@@ -400,9 +404,28 @@ impl App {
 
         let busy = self.busy;
         let mut to_select = None;
-        ui::card(ui, Some(&format!("Sicherungen ({})", self.snapshots.len())), |ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.snap_filter).hint_text("🔍 Filtern nach Datum, Rechner oder Pfad").desired_width(f32::INFINITY));
-            let needle = self.snap_filter.to_lowercase();
+        let now = chrono::Local::now();
+        let mut folders: Vec<String> = self.snapshots.iter().flat_map(|s| s.paths.iter().cloned()).collect();
+        folders.sort();
+        folders.dedup();
+        if self.snap_folder.as_ref().is_some_and(|f| !folders.contains(f)) {
+            self.snap_folder = None;
+        }
+        let shown = self.snapshots.iter().filter(|s| ui::snapshot_matches(s, &self.snap_filter, self.snap_folder.as_deref(), self.snap_range, now)).count();
+        let title = if shown == self.snapshots.len() { format!("Sicherungen ({shown})") } else { format!("Sicherungen ({shown} von {})", self.snapshots.len()) };
+        ui::card(ui, Some(&title), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.snap_filter).hint_text("🔍 Datum, Rechner oder Pfad").desired_width(220.0));
+                egui::ComboBox::from_id_salt("snap_folder").selected_text(self.snap_folder.clone().unwrap_or_else(|| "Alle Ordner".into())).width(220.0).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.snap_folder, None, "Alle Ordner");
+                    for f in &folders {
+                        ui.selectable_value(&mut self.snap_folder, Some(f.clone()), f);
+                    }
+                });
+                for (r, name) in ui::SnapRange::ALL {
+                    ui.selectable_value(&mut self.snap_range, r, name);
+                }
+            });
             egui::ScrollArea::vertical().id_salt("snaps").max_height(190.0).auto_shrink([false, true]).show(ui, |ui| {
                 ui.add_enabled_ui(!busy, |ui| {
                     egui::Grid::new("snap_grid").num_columns(4).striped(true).min_col_width(80.0).show(ui, |ui| {
@@ -411,11 +434,11 @@ impl App {
                         }
                         ui.end_row();
                         for s in &self.snapshots {
-                            let when = ui::short_time(&s.time);
-                            let paths = s.paths.join(", ");
-                            if !needle.is_empty() && ![&when, &s.hostname, &paths, &s.short_id].iter().any(|f| f.to_lowercase().contains(&needle)) {
+                            if !ui::snapshot_matches(s, &self.snap_filter, self.snap_folder.as_deref(), self.snap_range, now) {
                                 continue;
                             }
+                            let when = ui::short_time(&s.time);
+                            let paths = s.paths.join(", ");
                             let sel = self.selected.as_deref() == Some(&s.id);
                             if ui.selectable_label(sel, RichText::new(&s.short_id).monospace()).clicked() {
                                 to_select = Some(s.id.clone());
