@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unveröffentlicht]
+
+### Behoben
+- Windows: Zeitplan aktivieren schlug bei mehreren Uhrzeiten fehl („New-ScheduledTaskTrigger … System.Object[]“); die Trigger werden jetzt korrekt geklammert.
+- Backup: Meldet restic nach geschriebenem Snapshot einen Fehlercode (z. B. „Zugriff verweigert“ bei gesperrten Ordnern unter Windows), gilt der Lauf als Warnung statt als Fehler.
+
 ## [0.3.1]
 
 ### Neu

@@ -90,7 +90,7 @@ pub fn install(times: &[String], days: &[bool; 7]) -> Result<()> {
     let day_list = DAYS_PS.iter().zip(days).filter(|(_, on)| **on).map(|(n, _)| *n).collect::<Vec<_>>().join(",");
     let triggers = parsed
         .iter()
-        .map(|(h, m)| if all { format!("New-ScheduledTaskTrigger -Daily -At '{h:02}:{m:02}'") } else { format!("New-ScheduledTaskTrigger -Weekly -DaysOfWeek {day_list} -At '{h:02}:{m:02}'") })
+        .map(|(h, m)| if all { format!("(New-ScheduledTaskTrigger -Daily -At '{h:02}:{m:02}')") } else { format!("(New-ScheduledTaskTrigger -Weekly -DaysOfWeek {day_list} -At '{h:02}:{m:02}')") })
         .collect::<Vec<_>>()
         .join(",");
     let script = format!(
