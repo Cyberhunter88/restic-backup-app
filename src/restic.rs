@@ -123,6 +123,30 @@ pub fn parse_stats(output: &str) -> Option<RepoStats> {
     Some(RepoStats { size: serde_json::from_str::<Raw>(output.trim()).ok()?.total_size })
 }
 
+/// Eine Änderung zwischen zwei Snapshots (`modifier`: `+` neu, `-` entfernt, `M` geändert, sonst z. B. `U`/`T`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiffEntry {
+    pub modifier: String,
+    pub path: String,
+}
+
+pub fn parse_diff(output: &str) -> Vec<DiffEntry> {
+    #[derive(Deserialize)]
+    struct Raw {
+        message_type: String,
+        #[serde(default)]
+        path: String,
+        #[serde(default)]
+        modifier: String,
+    }
+    output
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Raw>(l).ok())
+        .filter(|r| r.message_type == "change")
+        .map(|r| DiffEntry { modifier: r.modifier, path: r.path })
+        .collect()
+}
+
 pub fn parse_ls(output: &str) -> Vec<Node> {
     output
         .lines()
@@ -265,6 +289,10 @@ impl Restic {
         parse_stats(&out).context("Unerwartete Ausgabe von restic stats")
     }
 
+    pub fn diff(&self, a: &str, b: &str) -> Result<Vec<DiffEntry>> {
+        Ok(parse_diff(&self.run(&["diff".into(), "--json".into(), a.into(), b.into()])?))
+    }
+
     pub fn check(&self) -> Result<()> {
         self.run(&Self::s(&["check"])).map(|_| ())
     }
@@ -345,6 +373,14 @@ mod tests {
         let n = parse_ls(o);
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].size, 3);
+    }
+
+    #[test]
+    fn diff_parsed() {
+        let o = "{\"message_type\":\"change\",\"path\":\"/a\",\"modifier\":\"-\"}\n{\"message_type\":\"change\",\"path\":\"/b\",\"modifier\":\"+\"}\n{\"message_type\":\"statistics\"}\n";
+        let d = parse_diff(o);
+        assert_eq!(d.len(), 2);
+        assert_eq!(d[1], DiffEntry { modifier: "+".into(), path: "/b".into() });
     }
 
     #[test]

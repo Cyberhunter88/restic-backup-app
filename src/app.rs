@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::restic::{BackupEvent, Node, Snapshot};
+use crate::restic::{BackupEvent, DiffEntry, Node, Snapshot};
 use crate::secrets::{self, Secret};
 use crate::ui::{self, ACCENT, ERR, MUTED, OK, WARN};
 use crate::{job, schedule, update};
@@ -20,6 +20,7 @@ enum Msg {
     Restored(Result<String, String>),
     RepoInfo(Result<String, String>),
     Overview(Result<job::RepoOverview, String>),
+    Diff(Result<Vec<DiffEntry>, String>),
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -63,6 +64,9 @@ pub struct App {
     snaps_loaded: bool,
     overview: Option<job::RepoOverview>,
     overview_msg: String,
+    compare_with: Option<String>,
+    diff: Option<Vec<DiffEntry>>,
+    diff_msg: String,
     /// Nach einem Backup die Repository-Daten neu laden (braucht den egui-Kontext)
     pending_overview: bool,
     snap_filter: String,
@@ -131,6 +135,9 @@ impl App {
             snaps_loaded: false,
             overview: None,
             overview_msg: String::new(),
+            compare_with: None,
+            diff: None,
+            diff_msg: String::new(),
             pending_overview: false,
             snap_filter: String::new(),
             snap_folder: None,
@@ -200,6 +207,16 @@ impl App {
                 Msg::RepoInfo(r) => {
                     self.busy = false;
                     self.repo_msg = r.unwrap_or_else(|e| format!("FEHLER: {e}"));
+                }
+                Msg::Diff(r) => {
+                    self.busy = false;
+                    match r {
+                        Ok(d) => {
+                            self.diff = Some(d);
+                            self.diff_msg.clear();
+                        }
+                        Err(e) => self.diff_msg = format!("FEHLER: {e}"),
+                    }
                 }
                 Msg::Overview(r) => {
                     self.busy = false;
@@ -507,6 +524,9 @@ impl App {
         });
         if let Some(id) = to_select {
             self.selected = Some(id);
+            self.compare_with = None;
+            self.diff = None;
+            self.diff_msg.clear();
             self.dir = "/".into();
             self.load_dir(&ctx);
         }
@@ -557,7 +577,62 @@ impl App {
             self.load_dir(&ctx);
         }
         if let Some((include, _)) = restore {
-            self.restore(&ctx, id, include);
+            self.restore(&ctx, id.clone(), include);
+        }
+        self.diff_card(ui, &ctx, &id);
+    }
+
+    /// Vergleicht den gewählten Snapshot mit einem anderen (`restic diff`).
+    fn diff_card(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, id: &str) {
+        let others: Vec<(String, String)> = self.snapshots.iter().filter(|s| s.id != id).map(|s| (s.id.clone(), format!("{}  {}", s.short_id, ui::short_time(&s.time)))).collect();
+        let busy = self.busy;
+        let mut run = false;
+        ui::card(ui, Some("Änderungen gegenüber einem anderen Snapshot"), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Vergleichen mit");
+                let shown = others.iter().find(|(i, _)| Some(i) == self.compare_with.as_ref()).map(|(_, l)| l.clone()).unwrap_or_else(|| "Snapshot wählen …".into());
+                egui::ComboBox::from_id_salt("compare_with").selected_text(shown).width(240.0).show_ui(ui, |ui| {
+                    for (i, l) in &others {
+                        ui.selectable_value(&mut self.compare_with, Some(i.clone()), l);
+                    }
+                });
+                if ui.add_enabled(!busy && self.compare_with.is_some(), egui::Button::new("Vergleichen")).clicked() {
+                    run = true;
+                }
+            });
+            ui::status(ui, &self.diff_msg);
+            if let Some(d) = &self.diff {
+                const MAX: usize = 500;
+                let (add, del, chg) = (d.iter().filter(|e| e.modifier == "+").count(), d.iter().filter(|e| e.modifier == "-").count(), d.iter().filter(|e| e.modifier != "+" && e.modifier != "-").count());
+                ui.label(format!("{add} nur im gewählten Snapshot (+), {del} nur im anderen (−), {chg} geändert"));
+                if d.is_empty() {
+                    ui::hint(ui, "Keine Unterschiede.");
+                }
+                egui::ScrollArea::vertical().id_salt("diff").max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
+                    for e in d.iter().take(MAX) {
+                        let color = match e.modifier.as_str() {
+                            "+" => OK,
+                            "-" => ERR,
+                            _ => WARN,
+                        };
+                        ui.label(RichText::new(format!("{}  {}", if e.modifier == "-" { "−" } else { e.modifier.as_str() }, e.path)).monospace().color(color));
+                    }
+                    if d.len() > MAX {
+                        ui::hint(ui, &format!("… und {} weitere", d.len() - MAX));
+                    }
+                });
+            }
+        });
+        if run {
+            if let Some(other) = self.compare_with.clone() {
+                let (cfg, base) = (self.cfg.clone(), id.to_string());
+                self.diff = None;
+                self.diff_msg = "Vergleiche …".into();
+                self.spawn(ctx, move |tx| {
+                    let r = job::open(&cfg).and_then(|r| r.diff(&other, &base));
+                    let _ = tx.send(Msg::Diff(r.map_err(|e| format!("{e:#}"))));
+                });
+            }
         }
     }
 
