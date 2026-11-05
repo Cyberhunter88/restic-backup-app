@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unveröffentlicht]
+## [0.3.5]
 
 ### Neu
 - Lizenzdatei (MIT) hinzugefügt.
