@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unveröffentlicht]
+## [0.3.0]
 
 ### Neu
 - Zeitplan: mehrere Uhrzeiten pro Tag (Schnellauswahl 1×/2× täglich, alle 6/3 Stunden, stündlich) und Wochentage wählbar. Linux: mehrere `OnCalendar`-Einträge im systemd-Timer; Windows: ein Task je Uhrzeit. Ältere Einzel-Uhrzeit wird übernommen.
