@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unveröffentlicht]
+## [0.3.2]
 
 ### Neu
 - Ausschlüsse: Das Eingabefeld nimmt jetzt mehrere Muster auf einmal an (ein Muster pro Zeile einfügen, Leerzeilen und `#`-Kommentare werden ignoriert, Doppelte übersprungen).
