@@ -23,5 +23,7 @@ Rust-Desktop-App (eframe/egui) für restic-Backups auf ein NAS per SMB, Windows 
 - `schedule.rs`: Linux systemd-User-Timer (`Persistent=true`), Windows Task per PowerShell-Cmdlets (ein Trigger je Uhrzeit, `StartWhenAvailable`; `schtasks` reicht dafür nicht). Mehrere Trigger müssen einzeln geklammert werden: `@((New-… ),(New-… ))`.
 - `config.rs` / `secrets.rs`: Einstellungen als Datei im Datenverzeichnis (`directories`), Passwörter ausschließlich im System-Schlüsselbund.
 - `app.rs` (GUI-Zustand, Tabs) führt lange Aufgaben in Threads aus und kommuniziert über `mpsc`-Kanäle mit der UI; `ui.rs` enthält Theme und Widgets.
+- `notify.rs` (Desktop-Meldung nur bei Warnung/Fehler) und `tray.rs` (Tray-Icon; Linux in eigenem GTK-Thread, ohne Tray-Dienst `None` → normales Beenden). `app.rs` verarbeitet Thread-Meldungen und Tray in `logic`, damit es auch bei verstecktem Fenster läuft.
+- `job.rs` führt im Zeitplan-Lauf zusätzlich alle `check_interval_days` eine Teilprüfung aus (`config::check_due`, Datei `last-check.txt`).
 - `autostart.rs`: Linux `~/.config/autostart`, Windows Run-Schlüssel. `update.rs` öffnet nur die Releases-Seite.
 - Packaging in `packaging/` (Inno-Setup für Windows, `.desktop`, Arch-`PKGBUILD`/`install.sh`); Bau und Release in `.github/workflows/` (`build.yml` wird auch vom `release.yml` aufgerufen).

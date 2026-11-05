@@ -3,7 +3,16 @@
 ## [Unveröffentlicht]
 
 ### Neu
+- Übersicht: Karte „Repository“ mit Größe, Snapshot-Anzahl und (unter Linux) freiem Platz auf dem NAS; die Daten werden per Knopfdruck geladen.
+- Snapshots: Filter nach Ordner und Zeitraum (zusätzlich zum Textfilter) und Vergleich zweier Snapshots (`restic diff`).
+- Einstellungen lassen sich exportieren und importieren (Info-Tab, ohne Passwörter).
+- Regelmäßige Integritätsprüfung: Der Zeitplan-Lauf prüft alle 7 Tage 5 % der Repo-Daten (einstellbar, 0 = aus); ein Fehler zählt als Warnung. Die Übersicht zeigt das Datum der letzten Prüfung.
+- Desktop-Benachrichtigung bei Warnung oder Fehler nach einem Lauf (auch bei Zeitplan-Läufen).
+- Tray-Icon (Öffnen, Backup jetzt, Beenden): Fenster schließen legt es in den Tray. Ohne Tray-Dienst (z. B. GNOME ohne AppIndicator, unter Arch optional `libayatana-appindicator`) verhält sich die App wie bisher.
 - Quellordner: Option „Jeden Ordner als eigenen Snapshot sichern“ (z. B. je ein Snapshot für `C:\Users\admin` und `C:\Users\xyz`). Die Aufbewahrung wird dann je Ordner angewendet; schlägt ein Ordner fehl, werden die übrigen trotzdem gesichert (Lauf gilt als Warnung). Beim Umstellen bleiben bereits vorhandene gemeinsame Snapshots bestehen und müssen bei Bedarf manuell gelöscht werden.
+
+### Geändert
+- Lange Hinweistexte sind unter „ⓘ Mehr“ aufklappbar; Einstellungen und Zeitplan sind gesperrt, solange ein Lauf aktiv ist.
 
 ### Behoben
 - Windows: Das Programmsymbol ist jetzt in der .exe eingebettet (vorher zeigten Explorer, Taskleiste und Verknüpfungen das Standard-Symbol).
