@@ -3,6 +3,7 @@
 ## [Unveröffentlicht]
 
 ### Neu
+- Lizenzdatei (MIT) hinzugefügt.
 - Übersicht: Karte „Repository“ mit Größe, Snapshot-Anzahl und (unter Linux) freiem Platz auf dem NAS; die Daten werden per Knopfdruck geladen.
 - Snapshots: Filter nach Ordner und Zeitraum (zusätzlich zum Textfilter) und Vergleich zweier Snapshots (`restic diff`).
 - Einstellungen lassen sich exportieren und importieren (Info-Tab, ohne Passwörter).
@@ -21,6 +22,7 @@
 ## [0.3.2]
 
 ### Neu
+- Lizenzdatei (MIT) hinzugefügt.
 - Ausschlüsse: Das Eingabefeld nimmt jetzt mehrere Muster auf einmal an (ein Muster pro Zeile einfügen, Leerzeilen und `#`-Kommentare werden ignoriert, Doppelte übersprungen).
 - „Übliche Ausschlüsse“ deckt deutlich mehr ab: Temp-/Cache-Ordner, AppData (Temp, INetCache, Packages, Browser-Caches), `NTUSER.DAT*`, Windows-Systemdateien sowie Linux-Papierkorb und -Caches.
 
@@ -31,6 +33,7 @@
 ## [0.3.1]
 
 ### Neu
+- Lizenzdatei (MIT) hinzugefügt.
 - Autostart: Option „Programm beim Anmelden automatisch starten (minimiert)“ im Tab Zeitplan (Linux: `~/.config/autostart`, Windows: Run-Schlüssel).
 - Verpasste Backups werden nachgeholt, auch wenn der PC mehrere Tage aus war: Linux über `Persistent=true` im Timer, Windows über „StartWhenAvailable“ (Task jetzt per PowerShell mit einem Trigger je Uhrzeit angelegt).
 - Zeitplan-Läufe versuchen die NAS-Verbindung bis zu 5-mal (je 60 s Abstand), falls das Netzwerk direkt nach dem Start noch fehlt.
@@ -44,6 +47,7 @@
 ## [0.3.0]
 
 ### Neu
+- Lizenzdatei (MIT) hinzugefügt.
 - Zeitplan: mehrere Uhrzeiten pro Tag (Schnellauswahl 1×/2× täglich, alle 6/3 Stunden, stündlich) und Wochentage wählbar. Linux: mehrere `OnCalendar`-Einträge im systemd-Timer; Windows: ein Task je Uhrzeit. Ältere Einzel-Uhrzeit wird übernommen.
 - Lokaler Verlauf der letzten Läufe (`history.tsv` im Datenverzeichnis, max. 200 Einträge), im Backup-Tab sichtbar – auch für Läufe des Zeitplans.
 - Neue Oberfläche: dunkles Theme mit Akzentfarbe, Seitenleiste, Karten-Layout, farbige Statusmeldungen.
@@ -62,6 +66,7 @@
 ## [0.2.0]
 
 ### Neu
+- Lizenzdatei (MIT) hinzugefügt.
 - Installer: Windows-Setup (Inno Setup, bringt restic mit), Linux `.deb` und AppImage; Release-Workflow bei Tag `v*`.
 - Bestehende restic-Repos verwenden: Button „Repo prüfen“ (vorhanden / nicht vorhanden / Passwort falsch); ein neues Repo wird nur angelegt, wenn „Neues Repo anlegen“ aktiviert ist.
 - Weitere Ausschlüsse: `--exclude-caches`, Markerdateien (`--exclude-if-present`, z. B. `.nobackup`), Größenlimit (`--exclude-larger-than`) und Vorlage „Übliche Ausschlüsse“.
