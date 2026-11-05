@@ -2,35 +2,30 @@ name: build
 
 # Ein Build pro Änderung:
 # - Feature-Branches bauen nur über ihren Pull Request (kein zusätzlicher Push-Build)
-# - main wird nach dem Merge einmal geprüft; Release-Commits ("Release v…") werden nicht
-#   noch einmal gebaut, da der Release-Workflow sie schon gebaut hat
-# - reine Doku-Änderungen lösen keinen Build aus
+# - Pull Requests werden immer gebaut (auch reine Doku-Änderungen), weil main die Prüfung
+#   „Anwendung prüfen“ verlangt
+# - main wird nach dem Merge einmal gebaut; trägt der Commit eine noch nicht veröffentlichte
+#   Version aus Cargo.toml (Release-PR), legt der Job „release“ Tag und GitHub-Release an
+# - reine Doku-Änderungen auf main lösen keinen Build aus
 on:
   push:
     branches: [main]
     tags: ["v*"]
     paths-ignore: ["**.md", ".githooks/**"]
   pull_request:
-    paths-ignore: ["**.md", ".githooks/**"]
+  # Auch vom Release-Workflow gestartet, damit der Release-PR die Pflichtprüfung bekommt
   workflow_dispatch:
-  # Wird vom Release-Workflow aufgerufen (Build eines Release-Branches)
-  workflow_call:
-    inputs:
-      ref:
-        type: string
-        default: ""
 
 permissions:
   contents: write
 
-# Neuere Läufe derselben Änderung ersetzen ältere (nicht bei Tags und nicht beim Release-Aufruf)
+# Neuere Läufe derselben Änderung ersetzen ältere (nicht bei Tags)
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) }}
 
 jobs:
   build:
-    if: github.event_name != 'push' || startsWith(github.ref, 'refs/tags/') || !startsWith(github.event.head_commit.message, 'Release v')
     strategy:
       fail-fast: false
       matrix:
@@ -42,8 +37,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -114,16 +107,46 @@ jobs:
           name: restic-backup-app-${{ matrix.target }}
           path: dist/*
 
+  # Stabiler Name: main verlangt genau diese Prüfung (wie bei den anderen Projekten)
+  pruefen:
+    name: Anwendung prüfen
+    if: always()
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Alle Builds verlangen
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          echo "Build (Linux und Windows): $BUILD_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          test "$BUILD_RESULT" = success
+
   release:
     needs: build
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
+      # Von Hand gesetzter Tag
       - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
         with:
           files: dist/*
           generate_release_notes: true
+      # Merge des Release-PR: Version aus Cargo.toml veröffentlichen, falls es den Tag noch nicht gibt
+      - name: Release für neue Version anlegen
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          if gh release view "v$v" >/dev/null 2>&1 || git ls-remote --exit-code --tags origin "refs/tags/v$v" >/dev/null 2>&1; then
+            echo "v$v ist schon veröffentlicht – nichts zu tun."
+          else
+            gh release create "v$v" dist/* --target "$GITHUB_SHA" --title "v$v" --generate-notes
+          fi

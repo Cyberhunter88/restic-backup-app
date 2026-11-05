@@ -1,7 +1,8 @@
 name: release
 
 # Manuell starten: Actions → release → "Run workflow" (Branch: main), Versionsnummer eingeben.
-# Ablauf: Version hochsetzen → Release-Branch bauen und testen → main vorspulen → Tag + GitHub-Release.
+# Ablauf: Version und Changelog auf einem Release-Branch anpassen → Release-PR öffnen und bauen.
+# Nach dem Mergen des PR (main ist geschützt) baut build.yml main und legt Tag + GitHub-Release an.
 
 on:
   workflow_dispatch:
@@ -13,6 +14,8 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
+  actions: write
 
 concurrency: release
 
@@ -70,43 +73,19 @@ jobs:
           git commit -am "Release v$VERSION"
           git push origin "HEAD:refs/heads/release/v$VERSION"
 
-  build:
+  pull-request:
     needs: prepare
-    uses: ./.github/workflows/build.yml
-    with:
-      ref: ${{ needs.prepare.outputs.branch }}
-
-  publish:
-    needs: [prepare, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.branch }}
-          fetch-depth: 0
-          # Optional: Secret RELEASE_TOKEN (PAT), falls main später geschützt wird
-          token: ${{ secrets.RELEASE_TOKEN || github.token }}
-      - name: main vorspulen (nur wenn main seit dem Start unverändert ist)
-        env:
-          DEFAULT: ${{ github.event.repository.default_branch }}
-        run: git push origin "HEAD:refs/heads/$DEFAULT"
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-      - name: GitHub-Release mit Tag erstellen
+      - name: Release-PR öffnen und Build starten
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.prepare.outputs.version }}
-        run: gh release create "v$VERSION" dist/* --target "$(git rev-parse HEAD)" --title "v$VERSION" --generate-notes
-
-  cleanup:
-    needs: [prepare, build, publish]
-    if: always() && needs.prepare.result == 'success'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.RELEASE_TOKEN || github.token }}
-      - name: Release-Branch löschen
-        run: git push origin --delete "${{ needs.prepare.outputs.branch }}" || true
+          BRANCH: ${{ needs.prepare.outputs.branch }}
+        run: |
+          gh pr create --base main --head "$BRANCH" --title "Release v$VERSION" \
+            --body "Setzt Version und Changelog auf $VERSION. Nach dem Mergen baut der main-Build und veröffentlicht v$VERSION automatisch."
+          # PRs, die mit dem Workflow-Token angelegt werden, starten keine Workflows – deshalb den Build von Hand anstoßen,
+          # damit der PR die Pflichtprüfung „Anwendung prüfen“ bekommt
+          gh workflow run build.yml --ref "$BRANCH"

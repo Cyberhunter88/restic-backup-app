@@ -13,7 +13,7 @@ Rust-Desktop-App (eframe/egui) für restic-Backups auf ein NAS per SMB, Windows 
 
 ## Workflow
 - Nie direkt auf `main` arbeiten: immer eigener Branch + Pull Request (`git config core.hooksPath .githooks` aktiviert den `pre-push`-Hook, der Pushes auf `main` blockiert).
-- Änderungen im `CHANGELOG.md` unter `## [Unveröffentlicht]` sammeln. Der Release-Workflow (manuell in GitHub Actions) setzt Version in `Cargo.toml`/`Cargo.lock` und benennt diesen Abschnitt um – Version also nicht von Hand erhöhen.
+- Änderungen im `CHANGELOG.md` unter `## [Unveröffentlicht]` sammeln. Der Release-Workflow (manuell in GitHub Actions) setzt Version in `Cargo.toml`/`Cargo.lock`, benennt diesen Abschnitt um und öffnet einen Release-PR (Branch `release/vX.Y.Z`) – Version also nicht von Hand erhöhen. Nach dem Mergen des PR baut `build.yml` `main` und legt Tag + GitHub-Release an. `main` ist geschützt wie bei den anderen Projekten: nur per PR, Pflichtprüfung „Anwendung prüfen“ (Job `pruefen` in `build.yml`), Admins eingeschlossen.
 
 ## Architektur
 - `main.rs`: zwei Modi – GUI (`ui`/`app`) oder `--run-backup` (headless, schreibt via `config::write_last_run` nach `last-run.log` und in `history.tsv`). Der Zeitplan startet immer diese Headless-Variante der eigenen Binärdatei.
