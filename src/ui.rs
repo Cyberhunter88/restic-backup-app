@@ -84,6 +84,16 @@ pub fn hint(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).color(MUTED).size(13.0));
 }
 
+/// Kurzer Hinweis mit aufklappbarer Langfassung („ⓘ Mehr“).
+pub fn hint_long(ui: &mut egui::Ui, id: &str, short: &str, long: &str) {
+    ui.horizontal_wrapped(|ui| {
+        hint(ui, short);
+    });
+    egui::CollapsingHeader::new(RichText::new("ⓘ Mehr").color(MUTED).size(13.0)).id_salt(id).show(ui, |ui| {
+        hint(ui, long);
+    });
+}
+
 /// Farbe passend zum Inhalt einer Statusmeldung.
 pub fn status_color(msg: &str) -> Color32 {
     if msg.starts_with("FEHLER") || msg.contains("falsch") || msg.contains("kein Repository") {

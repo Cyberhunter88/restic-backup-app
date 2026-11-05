@@ -521,7 +521,12 @@ impl App {
         });
         ui.heading("Einstellungen");
         ui.add_space(4.0);
+        if self.busy {
+            ui::hint(ui, "Gesperrt, solange ein Lauf aktiv ist.");
+        }
+        let locked = self.busy;
         egui::ScrollArea::vertical().id_salt("settings_scroll").auto_shrink(false).show(ui, |ui| {
+            ui.add_enabled_ui(!locked, |ui| {
             ui::card(ui, Some("NAS-Verbindung"), |ui| {
                 egui::Grid::new("nas").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
                     field(ui, "NAS-Host", &mut self.cfg.host, "z. B. nas.local");
@@ -560,7 +565,7 @@ impl App {
                 }
                 removable_list(ui, &mut self.cfg.sources);
                 ui.checkbox(&mut self.cfg.separate_snapshots, "Jeden Ordner als eigenen Snapshot sichern");
-                ui::hint(ui, "Z. B. getrennte Snapshots für C:\\Users\\admin und C:\\Users\\xyz; die Aufbewahrung gilt dann je Ordner. Bereits vorhandene gemeinsame Snapshots bleiben bestehen und müssen bei Bedarf manuell gelöscht werden.");
+                ui::hint_long(ui, "hint_sep", "Je Ordner ein Snapshot; die Aufbewahrung gilt dann je Ordner.", "Z. B. getrennte Snapshots für C:\\Users\\admin und C:\\Users\\xyz. Bereits vorhandene gemeinsame Snapshots bleiben bestehen und müssen bei Bedarf manuell gelöscht werden.");
                 if ui.button("＋  Ordner hinzufügen …").clicked() {
                     if let Some(p) = rfd::FileDialog::new().pick_folder() {
                         let p = p.to_string_lossy().into_owned();
@@ -614,6 +619,7 @@ impl App {
                 });
                 ui::hint(ui, "So viele Snapshots pro Zeitraum bleiben erhalten, ältere werden nach jedem Backup entfernt.");
             });
+            });
         });
     }
 
@@ -636,11 +642,10 @@ impl App {
         ui.add_space(4.0);
         ui::card(ui, Some("restic Backup"), |ui| {
             ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-            ui::hint(ui, "Neue Versionen stehen auf der Releases-Seite auf GitHub (Anmeldung im Browser erforderlich).");
             if ui.add(ui::primary("Neue Versionen ansehen")).clicked() {
                 update::open_url(update::RELEASES_URL);
             }
-            ui::hint(ui, "Update: neues Setup (Windows) bzw. .deb/AppImage (Linux) installieren – Einstellungen und Passwörter bleiben erhalten.");
+            ui::hint_long(ui, "hint_update", "Neue Versionen stehen auf GitHub (Anmeldung im Browser nötig).", "Update: neues Setup (Windows) bzw. .deb/AppImage (Linux) installieren – Einstellungen und Passwörter bleiben erhalten.");
         });
         ui::card(ui, Some("Dateien"), |ui| {
             if let Ok(p) = crate::config::config_path() {
@@ -655,7 +660,12 @@ impl App {
     fn schedule_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Zeitplan");
         ui.add_space(4.0);
+        if self.busy {
+            ui::hint(ui, "Gesperrt, solange ein Lauf aktiv ist.");
+        }
+        let locked = self.busy;
         egui::ScrollArea::vertical().id_salt("schedule_scroll").auto_shrink(false).show(ui, |ui| {
+            ui.add_enabled_ui(!locked, |ui| {
             ui::card(ui, Some("Wann soll gesichert werden?"), |ui| {
                 ui.label("Schnellauswahl");
                 ui.horizontal_wrapped(|ui| {
@@ -723,7 +733,12 @@ impl App {
                     }
                 });
                 ui::status(ui, &self.status);
-                ui::hint(ui, "Verpasste Läufe (Rechner war aus) holt der Zeitplan beim nächsten Start nach. Änderungen gelten erst nach „Zeitplan aktivieren“.");
+                ui::hint_long(
+                    ui,
+                    "hint_catchup",
+                    "Änderungen gelten erst nach „Zeitplan aktivieren“. Verpasste Läufe werden nachgeholt.",
+                    "War der PC zur geplanten Zeit aus, wird das Backup beim nächsten Anmelden bzw. Start nachgeholt (einmal, auch nach mehreren Tagen). Ist das NAS dann noch nicht erreichbar, versucht der Lauf es bis zu 5 Minuten lang erneut.",
+                );
                 #[cfg(windows)]
                 ui::hint(ui, "Der Taskplaner-Task läuft unter deinem Benutzer und nutzt die Freigabe direkt per UNC-Pfad.");
             });
@@ -738,13 +753,13 @@ impl App {
                         }
                     };
                 }
-                ui::hint(ui, "Der Zeitplan läuft unabhängig davon. War der PC zur geplanten Zeit aus, wird das Backup beim nächsten Anmelden bzw. Start nachgeholt (einmal, auch nach mehreren Tagen). Ist das NAS dann noch nicht erreichbar, versucht der Lauf es bis zu 5 Minuten lang erneut.");
+                ui::hint(ui, "Der Zeitplan läuft unabhängig vom Autostart.");
                 #[cfg(unix)]
-                ui::hint(ui, "Linux: Der Timer läuft nur bei angemeldetem Benutzer. Für Backups auch ohne Anmeldung: sudo loginctl enable-linger $USER");
+                ui::hint_long(ui, "hint_linger", "Linux: Der Timer läuft nur bei angemeldetem Benutzer.", "Für Backups auch ohne Anmeldung: sudo loginctl enable-linger $USER");
             });
             #[cfg(unix)]
             ui::card(ui, Some("Automatisches Einbinden (Linux)"), |ui| {
-                ui::hint(ui, "Geplante Läufe können keinen pkexec-Dialog bestätigen. Trage diese Zeile in /etc/fstab ein (als root); danach mountet die App ohne Rückfrage:");
+                ui::hint_long(ui, "hint_fstab", "Geplante Läufe brauchen einen fstab-Eintrag (als root).", "Geplante Läufe können keinen pkexec-Dialog bestätigen. Trage diese Zeile in /etc/fstab ein (als root); danach mountet die App ohne Rückfrage:");
                 let mut line = smb::fstab_line(&self.cfg).unwrap_or_default();
                 ui.add(egui::TextEdit::multiline(&mut line).code_editor().desired_rows(3).desired_width(f32::INFINITY));
                 if ui.button("Credentials-Datei anlegen (SMB-Passwort aus Keyring)").clicked() {
@@ -753,6 +768,7 @@ impl App {
                         Err(e) => format!("FEHLER: {e:#}"),
                     };
                 }
+            });
             });
         });
     }
