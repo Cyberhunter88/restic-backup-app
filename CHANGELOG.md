@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0]
+
+### Neu
+- Zeitplan: mehrere Uhrzeiten pro Tag (Schnellauswahl 1×/2× täglich, alle 6/3 Stunden, stündlich) und Wochentage wählbar. Linux: mehrere `OnCalendar`-Einträge im systemd-Timer; Windows: ein Task je Uhrzeit. Ältere Einzel-Uhrzeit wird übernommen.
+- Lokaler Verlauf der letzten Läufe (`history.tsv` im Datenverzeichnis, max. 200 Einträge), im Backup-Tab sichtbar – auch für Läufe des Zeitplans.
+- Neue Oberfläche: dunkles Theme mit Akzentfarbe, Seitenleiste, Karten-Layout, farbige Statusmeldungen.
+- Backup-Tab: Status-Badge des letzten Laufs, Kennzahlen, Fortschrittskarte, farbiges Protokoll.
+- Snapshots: automatisches Laden, Filterfeld, Tabelle mit lesbarer Zeit, Dateigrößen in KB/MB/GB, Link zum Zielordner nach Wiederherstellung.
+- Einstellungen in Bereiche gegliedert, Speichern-Leiste bleibt unten sichtbar, Enter fügt Ausschlüsse hinzu.
+
+### Behoben
+- Das Protokoll des letzten Laufs wird nicht mehr bei jedem Frame von der Platte gelesen.
+
 ## [0.2.1]
 
 ### Behoben

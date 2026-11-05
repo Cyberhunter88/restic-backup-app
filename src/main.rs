@@ -8,6 +8,7 @@ mod restic;
 mod schedule;
 mod secrets;
 mod smb;
+mod ui;
 mod update;
 
 use clap::Parser;
@@ -41,14 +42,17 @@ fn main() -> anyhow::Result<()> {
         return run_headless();
     }
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../packaging/icon.png")).ok();
-    let mut viewport = eframe::egui::ViewportBuilder::default().with_inner_size([760.0, 560.0]);
+    let mut viewport = eframe::egui::ViewportBuilder::default().with_inner_size([960.0, 680.0]).with_min_inner_size([760.0, 520.0]);
     if let Some(icon) = icon {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }
     eframe::run_native(
         &format!("restic Backup {}", env!("CARGO_PKG_VERSION")),
         eframe::NativeOptions { viewport, ..Default::default() },
-        Box::new(|_cc| Ok(Box::new(app::App::new()))),
+        Box::new(|cc| {
+            ui::apply_theme(&cc.egui_ctx);
+            Ok(Box::new(app::App::new()))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("GUI-Fehler: {e}"))
 }
