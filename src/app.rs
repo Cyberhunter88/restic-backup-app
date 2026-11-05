@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::restic::{BackupEvent, Node, Snapshot};
+use crate::restic::{BackupEvent, DiffEntry, Node, Snapshot};
 use crate::secrets::{self, Secret};
 use crate::ui::{self, ACCENT, ERR, MUTED, OK, WARN};
 use crate::{job, schedule, update};
@@ -13,12 +13,14 @@ use std::sync::Arc;
 enum Msg {
     Log(String),
     Event(BackupEvent),
-    BackupDone(Result<(), String>),
+    BackupDone(Result<bool, String>),
     Snaps(Result<Vec<Snapshot>, String>),
     Nodes(Result<Vec<Node>, String>),
     Info(Result<String, String>),
     Restored(Result<String, String>),
     RepoInfo(Result<String, String>),
+    Overview(Result<job::RepoOverview, String>),
+    Diff(Result<Vec<DiffEntry>, String>),
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -60,7 +62,19 @@ pub struct App {
     history: Vec<crate::config::HistoryEntry>,
     snapshots: Vec<Snapshot>,
     snaps_loaded: bool,
+    overview: Option<job::RepoOverview>,
+    overview_msg: String,
+    last_check: Option<crate::config::LastCheck>,
+    compare_with: Option<String>,
+    diff: Option<Vec<DiffEntry>>,
+    diff_msg: String,
+    /// Nach einem Backup die Repository-Daten neu laden (braucht den egui-Kontext)
+    pending_overview: bool,
+    tray: Option<crate::tray::Tray>,
+    quitting: bool,
     snap_filter: String,
+    snap_folder: Option<String>,
+    snap_range: ui::SnapRange,
     selected: Option<String>,
     dir: String,
     nodes: Vec<Node>,
@@ -100,7 +114,7 @@ fn secret_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(ctx: &egui::Context) -> Self {
         let (tx, rx) = channel();
         let cfg = Config::load().unwrap_or_default();
         Self {
@@ -122,7 +136,18 @@ impl App {
             history: crate::config::read_history(8),
             snapshots: vec![],
             snaps_loaded: false,
+            overview: None,
+            overview_msg: String::new(),
+            last_check: crate::config::read_last_check(),
+            compare_with: None,
+            diff: None,
+            diff_msg: String::new(),
+            pending_overview: false,
+            tray: crate::tray::start(ctx.clone()),
+            quitting: false,
             snap_filter: String::new(),
+            snap_folder: None,
+            snap_range: ui::SnapRange::All,
             selected: None,
             dir: "/".into(),
             nodes: vec![],
@@ -130,6 +155,36 @@ impl App {
             restored_to: None,
             status: String::new(),
             cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn has_tray(&self) -> bool {
+        self.tray.is_some()
+    }
+
+    /// Tray-Menü bedienen und das Schließen des Fensters in den Tray umleiten.
+    fn handle_tray(&mut self, ctx: &egui::Context) {
+        use crate::tray::TrayCmd;
+        let Some(tray) = &self.tray else { return };
+        let cmds: Vec<TrayCmd> = tray.rx.try_iter().collect();
+        for c in cmds {
+            match c {
+                TrayCmd::Open => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                TrayCmd::Backup if !self.busy && self.cfg.is_ready() => self.start_backup(ctx),
+                TrayCmd::Backup => {}
+                TrayCmd::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+        if !self.quitting && ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
     }
 
@@ -155,14 +210,20 @@ impl App {
                 Msg::BackupDone(r) => {
                     self.busy = false;
                     let ok = r.is_ok();
+                    crate::notify::backup_finished(matches!(r, Ok(true)), r.as_ref().err().map(String::as_str));
                     self.log.push(match r {
-                        Ok(()) => "Backup erfolgreich.".into(),
+                        Ok(false) => "Backup erfolgreich.".into(),
+                        Ok(true) => "Backup mit Warnungen abgeschlossen.".into(),
                         Err(e) => format!("FEHLER: {e}"),
                     });
                     let _ = crate::config::write_last_run(ok, &self.log);
                     self.last_run = crate::config::read_last_run();
                     self.history = crate::config::read_history(8);
+                    self.last_check = crate::config::read_last_check();
                     self.snaps_loaded = false;
+                    if self.overview.is_some() {
+                        self.pending_overview = true;
+                    }
                 }
                 Msg::Snaps(r) => {
                     self.busy = false;
@@ -186,8 +247,29 @@ impl App {
                     self.busy = false;
                     self.repo_msg = r.unwrap_or_else(|e| format!("FEHLER: {e}"));
                 }
+                Msg::Diff(r) => {
+                    self.busy = false;
+                    match r {
+                        Ok(d) => {
+                            self.diff = Some(d);
+                            self.diff_msg.clear();
+                        }
+                        Err(e) => self.diff_msg = format!("FEHLER: {e}"),
+                    }
+                }
+                Msg::Overview(r) => {
+                    self.busy = false;
+                    match r {
+                        Ok(o) => {
+                            self.overview = Some(o);
+                            self.overview_msg.clear();
+                        }
+                        Err(e) => self.overview_msg = format!("FEHLER: {e}"),
+                    }
+                }
                 Msg::Info(r) => {
                     self.busy = false;
+                    self.last_check = crate::config::read_last_check();
                     self.status = r.unwrap_or_else(|e| format!("FEHLER: {e}"));
                 }
                 Msg::Restored(r) => {
@@ -233,6 +315,14 @@ impl App {
         });
     }
 
+    fn load_overview(&mut self, ctx: &egui::Context) {
+        let cfg = self.cfg.clone();
+        self.overview_msg = "Lade Repository-Daten …".into();
+        self.spawn(ctx, move |tx| {
+            let _ = tx.send(Msg::Overview(job::repo_overview(&cfg).map_err(|e| format!("{e:#}"))));
+        });
+    }
+
     fn start_backup(&mut self, ctx: &egui::Context) {
         self.progress = 0.0;
         self.log.clear();
@@ -246,7 +336,7 @@ impl App {
         self.spawn(ctx, move |tx| {
             let (t1, t2) = (tx.clone(), tx.clone());
             let r = job::run_backup(&cfg, true, &cancel, move |m| drop(t1.send(Msg::Log(m))), move |e| drop(t2.send(Msg::Event(e))));
-            let _ = tx.send(Msg::BackupDone(r.map(|_| ()).map_err(|e| format!("{e:#}"))));
+            let _ = tx.send(Msg::BackupDone(r.map(|o| o.warnings).map_err(|e| format!("{e:#}"))));
         });
     }
 
@@ -313,11 +403,41 @@ impl App {
             }
         });
 
-        if self.busy && !self.log.is_empty() {
-            ui::card(ui, Some("Läuft …"), |ui| {
-                if let Some(step) = self.log.iter().rev().find(|l| !l.starts_with("Snapshot")) {
-                    ui.label(RichText::new(step).color(MUTED));
+        if self.cfg.is_ready() {
+            ui::card(ui, Some("Repository"), |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    match &self.overview {
+                        Some(o) => {
+                            ui.label(format!("Größe: {}", ui::human_bytes(o.size)));
+                            ui.label(format!("Snapshots: {}", o.snapshots));
+                            if let Some(f) = o.free {
+                                ui.label(format!("Frei auf dem NAS: {}", ui::human_bytes(f)));
+                            }
+                        }
+                        None => ui::hint(ui, "Noch nicht geladen (verbindet kurz mit dem NAS)."),
+                    }
+                    if ui.add_enabled(!self.busy, egui::Button::new(if self.overview.is_some() { "⟳ Aktualisieren" } else { "Laden" })).clicked() {
+                        self.load_overview(&ctx);
+                    }
+                });
+                ui::status(ui, &self.overview_msg);
+                let now = chrono::Local::now().naive_local();
+                let due = crate::config::check_due(self.last_check.as_ref(), self.cfg.check_interval_days, now);
+                match &self.last_check {
+                    Some(c) => {
+                        let text = format!("Letzte Prüfung: {}{}", c.time.format("%d.%m.%Y %H:%M"), if c.ok { "" } else { " – FEHLGESCHLAGEN" });
+                        ui.label(RichText::new(text).color(if !c.ok { ERR } else if due { WARN } else { MUTED }).size(13.0));
+                    }
+                    None if self.cfg.check_interval_days > 0 => ui::hint(ui, "Noch keine Prüfung durchgeführt (läuft automatisch im Zeitplan-Lauf)."),
+                    None => {}
                 }
+            });
+        }
+
+        if self.busy && !self.log.is_empty() {
+            // Aktueller Schritt als Titel; das Protokoll darunter zeigt ihn nicht doppelt
+            let title = self.log.iter().rev().find(|l| !l.starts_with("Snapshot")).cloned().unwrap_or_else(|| "Läuft …".into());
+            ui::card(ui, Some(&title), |ui| {
                 ui.horizontal(|ui| {
                     ui.add(egui::ProgressBar::new(self.progress).show_percentage().animate(true).desired_width(ui.available_width() - 110.0));
                     if ui.button("Abbrechen").clicked() {
@@ -327,10 +447,11 @@ impl App {
             });
         }
 
-        if !self.history.is_empty() {
-            ui::card(ui, Some("Verlauf"), |ui| {
+        // Der neueste Lauf steht schon oben unter „Letzter Lauf“
+        if self.history.len() > 1 {
+            ui::card(ui, Some("Frühere Läufe"), |ui| {
                 egui::Grid::new("history").num_columns(3).striped(true).spacing([16.0, 6.0]).show(ui, |ui| {
-                    for h in &self.history {
+                    for h in self.history.iter().skip(1) {
                         ui.label(RichText::new(&h.time).color(MUTED));
                         if h.ok { ui::badge(ui, "OK", OK) } else { ui::badge(ui, "Fehler", ERR) }
                         ui.label(&h.summary);
@@ -374,6 +495,7 @@ impl App {
                     self.status = "Prüfe Repository …".into();
                     self.spawn(&ctx, move |tx| {
                         let r = job::open(&cfg).and_then(|r| r.check());
+                        crate::config::write_last_check(r.is_ok());
                         let _ = tx.send(Msg::Info(r.map(|_| "Repository ist in Ordnung.".to_string()).map_err(|e| format!("{e:#}"))));
                     });
                 }
@@ -400,9 +522,28 @@ impl App {
 
         let busy = self.busy;
         let mut to_select = None;
-        ui::card(ui, Some(&format!("Sicherungen ({})", self.snapshots.len())), |ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.snap_filter).hint_text("🔍 Filtern nach Datum, Rechner oder Pfad").desired_width(f32::INFINITY));
-            let needle = self.snap_filter.to_lowercase();
+        let now = chrono::Local::now();
+        let mut folders: Vec<String> = self.snapshots.iter().flat_map(|s| s.paths.iter().cloned()).collect();
+        folders.sort();
+        folders.dedup();
+        if self.snap_folder.as_ref().is_some_and(|f| !folders.contains(f)) {
+            self.snap_folder = None;
+        }
+        let shown = self.snapshots.iter().filter(|s| ui::snapshot_matches(s, &self.snap_filter, self.snap_folder.as_deref(), self.snap_range, now)).count();
+        let title = if shown == self.snapshots.len() { format!("Sicherungen ({shown})") } else { format!("Sicherungen ({shown} von {})", self.snapshots.len()) };
+        ui::card(ui, Some(&title), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut self.snap_filter).hint_text("🔍 Datum, Rechner oder Pfad").desired_width(220.0));
+                egui::ComboBox::from_id_salt("snap_folder").selected_text(self.snap_folder.clone().unwrap_or_else(|| "Alle Ordner".into())).width(220.0).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.snap_folder, None, "Alle Ordner");
+                    for f in &folders {
+                        ui.selectable_value(&mut self.snap_folder, Some(f.clone()), f);
+                    }
+                });
+                for (r, name) in ui::SnapRange::ALL {
+                    ui.selectable_value(&mut self.snap_range, r, name);
+                }
+            });
             egui::ScrollArea::vertical().id_salt("snaps").max_height(190.0).auto_shrink([false, true]).show(ui, |ui| {
                 ui.add_enabled_ui(!busy, |ui| {
                     egui::Grid::new("snap_grid").num_columns(4).striped(true).min_col_width(80.0).show(ui, |ui| {
@@ -411,11 +552,11 @@ impl App {
                         }
                         ui.end_row();
                         for s in &self.snapshots {
-                            let when = ui::short_time(&s.time);
-                            let paths = s.paths.join(", ");
-                            if !needle.is_empty() && ![&when, &s.hostname, &paths, &s.short_id].iter().any(|f| f.to_lowercase().contains(&needle)) {
+                            if !ui::snapshot_matches(s, &self.snap_filter, self.snap_folder.as_deref(), self.snap_range, now) {
                                 continue;
                             }
+                            let when = ui::short_time(&s.time);
+                            let paths = s.paths.join(", ");
                             let sel = self.selected.as_deref() == Some(&s.id);
                             if ui.selectable_label(sel, RichText::new(&s.short_id).monospace()).clicked() {
                                 to_select = Some(s.id.clone());
@@ -434,6 +575,9 @@ impl App {
         });
         if let Some(id) = to_select {
             self.selected = Some(id);
+            self.compare_with = None;
+            self.diff = None;
+            self.diff_msg.clear();
             self.dir = "/".into();
             self.load_dir(&ctx);
         }
@@ -484,7 +628,62 @@ impl App {
             self.load_dir(&ctx);
         }
         if let Some((include, _)) = restore {
-            self.restore(&ctx, id, include);
+            self.restore(&ctx, id.clone(), include);
+        }
+        self.diff_card(ui, &ctx, &id);
+    }
+
+    /// Vergleicht den gewählten Snapshot mit einem anderen (`restic diff`).
+    fn diff_card(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, id: &str) {
+        let others: Vec<(String, String)> = self.snapshots.iter().filter(|s| s.id != id).map(|s| (s.id.clone(), format!("{}  {}", s.short_id, ui::short_time(&s.time)))).collect();
+        let busy = self.busy;
+        let mut run = false;
+        ui::card(ui, Some("Änderungen gegenüber einem anderen Snapshot"), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Vergleichen mit");
+                let shown = others.iter().find(|(i, _)| Some(i) == self.compare_with.as_ref()).map(|(_, l)| l.clone()).unwrap_or_else(|| "Snapshot wählen …".into());
+                egui::ComboBox::from_id_salt("compare_with").selected_text(shown).width(240.0).show_ui(ui, |ui| {
+                    for (i, l) in &others {
+                        ui.selectable_value(&mut self.compare_with, Some(i.clone()), l);
+                    }
+                });
+                if ui.add_enabled(!busy && self.compare_with.is_some(), egui::Button::new("Vergleichen")).clicked() {
+                    run = true;
+                }
+            });
+            ui::status(ui, &self.diff_msg);
+            if let Some(d) = &self.diff {
+                const MAX: usize = 500;
+                let (add, del, chg) = (d.iter().filter(|e| e.modifier == "+").count(), d.iter().filter(|e| e.modifier == "-").count(), d.iter().filter(|e| e.modifier != "+" && e.modifier != "-").count());
+                ui.label(format!("{add} nur im gewählten Snapshot (+), {del} nur im anderen (−), {chg} geändert"));
+                if d.is_empty() {
+                    ui::hint(ui, "Keine Unterschiede.");
+                }
+                egui::ScrollArea::vertical().id_salt("diff").max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
+                    for e in d.iter().take(MAX) {
+                        let color = match e.modifier.as_str() {
+                            "+" => OK,
+                            "-" => ERR,
+                            _ => WARN,
+                        };
+                        ui.label(RichText::new(format!("{}  {}", if e.modifier == "-" { "−" } else { e.modifier.as_str() }, e.path)).monospace().color(color));
+                    }
+                    if d.len() > MAX {
+                        ui::hint(ui, &format!("… und {} weitere", d.len() - MAX));
+                    }
+                });
+            }
+        });
+        if run {
+            if let Some(other) = self.compare_with.clone() {
+                let (cfg, base) = (self.cfg.clone(), id.to_string());
+                self.diff = None;
+                self.diff_msg = "Vergleiche …".into();
+                self.spawn(ctx, move |tx| {
+                    let r = job::open(&cfg).and_then(|r| r.diff(&other, &base));
+                    let _ = tx.send(Msg::Diff(r.map_err(|e| format!("{e:#}"))));
+                });
+            }
         }
     }
 
@@ -521,7 +720,12 @@ impl App {
         });
         ui.heading("Einstellungen");
         ui.add_space(4.0);
+        if self.busy {
+            ui::hint(ui, "Gesperrt, solange ein Lauf aktiv ist.");
+        }
+        let locked = self.busy;
         egui::ScrollArea::vertical().id_salt("settings_scroll").auto_shrink(false).show(ui, |ui| {
+            ui.add_enabled_ui(!locked, |ui| {
             ui::card(ui, Some("NAS-Verbindung"), |ui| {
                 egui::Grid::new("nas").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
                     field(ui, "NAS-Host", &mut self.cfg.host, "z. B. nas.local");
@@ -560,7 +764,7 @@ impl App {
                 }
                 removable_list(ui, &mut self.cfg.sources);
                 ui.checkbox(&mut self.cfg.separate_snapshots, "Jeden Ordner als eigenen Snapshot sichern");
-                ui::hint(ui, "Z. B. getrennte Snapshots für C:\\Users\\admin und C:\\Users\\xyz; die Aufbewahrung gilt dann je Ordner. Bereits vorhandene gemeinsame Snapshots bleiben bestehen und müssen bei Bedarf manuell gelöscht werden.");
+                ui::hint_long(ui, "hint_sep", "Je Ordner ein Snapshot; die Aufbewahrung gilt dann je Ordner.", "Z. B. getrennte Snapshots für C:\\Users\\admin und C:\\Users\\xyz. Bereits vorhandene gemeinsame Snapshots bleiben bestehen und müssen bei Bedarf manuell gelöscht werden.");
                 if ui.button("＋  Ordner hinzufügen …").clicked() {
                     if let Some(p) = rfd::FileDialog::new().pick_folder() {
                         let p = p.to_string_lossy().into_owned();
@@ -614,6 +818,18 @@ impl App {
                 });
                 ui::hint(ui, "So viele Snapshots pro Zeitraum bleiben erhalten, ältere werden nach jedem Backup entfernt.");
             });
+
+            ui::card(ui, Some("Integritätsprüfung"), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Alle");
+                    ui.add(egui::DragValue::new(&mut self.cfg.check_interval_days).range(0..=365));
+                    ui.label("Tage");
+                    ui.label("Anteil der Daten");
+                    ui.add(egui::DragValue::new(&mut self.cfg.check_subset_percent).range(1..=100).suffix(" %"));
+                });
+                ui::hint(ui, "Der Zeitplan-Lauf prüft nach dem Backup einen Teil der Repository-Daten (0 Tage = aus). Ein Fehler wird als Warnung gemeldet.");
+            });
+            });
         });
     }
 
@@ -636,11 +852,35 @@ impl App {
         ui.add_space(4.0);
         ui::card(ui, Some("restic Backup"), |ui| {
             ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-            ui::hint(ui, "Neue Versionen stehen auf der Releases-Seite auf GitHub (Anmeldung im Browser erforderlich).");
             if ui.add(ui::primary("Neue Versionen ansehen")).clicked() {
                 update::open_url(update::RELEASES_URL);
             }
-            ui::hint(ui, "Update: neues Setup (Windows) bzw. .deb/AppImage (Linux) installieren – Einstellungen und Passwörter bleiben erhalten.");
+            ui::hint_long(ui, "hint_update", "Neue Versionen stehen auf GitHub (Anmeldung im Browser nötig).", "Update: neues Setup (Windows) bzw. .deb/AppImage (Linux) installieren – Einstellungen und Passwörter bleiben erhalten.");
+        });
+        ui::card(ui, Some("Konfiguration"), |ui| {
+            ui::hint(ui, "Einstellungen als Datei sichern oder auf einen anderen Rechner übernehmen. Passwörter sind nicht enthalten.");
+            ui.horizontal(|ui| {
+                if ui.add_enabled(!self.busy, egui::Button::new("Exportieren …")).clicked() {
+                    if let Some(p) = rfd::FileDialog::new().set_file_name("restic-backup-einstellungen.toml").add_filter("TOML", &["toml"]).save_file() {
+                        self.status = match self.cfg.export_to(&p) {
+                            Ok(()) => format!("Exportiert nach {}.", p.display()),
+                            Err(e) => format!("FEHLER: {e:#}"),
+                        };
+                    }
+                }
+                if ui.add_enabled(!self.busy, egui::Button::new("Importieren …")).clicked() {
+                    if let Some(p) = rfd::FileDialog::new().add_filter("TOML", &["toml"]).pick_file() {
+                        self.status = match Config::import_from(&p) {
+                            Ok(c) => {
+                                self.cfg = c;
+                                "Importiert, aber noch nicht gespeichert. Unter „Einstellungen“ speichern und die Passwörter neu eintragen.".into()
+                            }
+                            Err(e) => format!("FEHLER: {e:#}"),
+                        };
+                    }
+                }
+            });
+            ui::status(ui, &self.status);
         });
         ui::card(ui, Some("Dateien"), |ui| {
             if let Ok(p) = crate::config::config_path() {
@@ -655,7 +895,12 @@ impl App {
     fn schedule_tab(&mut self, ui: &mut egui::Ui) {
         ui.heading("Zeitplan");
         ui.add_space(4.0);
+        if self.busy {
+            ui::hint(ui, "Gesperrt, solange ein Lauf aktiv ist.");
+        }
+        let locked = self.busy;
         egui::ScrollArea::vertical().id_salt("schedule_scroll").auto_shrink(false).show(ui, |ui| {
+            ui.add_enabled_ui(!locked, |ui| {
             ui::card(ui, Some("Wann soll gesichert werden?"), |ui| {
                 ui.label("Schnellauswahl");
                 ui.horizontal_wrapped(|ui| {
@@ -723,7 +968,12 @@ impl App {
                     }
                 });
                 ui::status(ui, &self.status);
-                ui::hint(ui, "Verpasste Läufe (Rechner war aus) holt der Zeitplan beim nächsten Start nach. Änderungen gelten erst nach „Zeitplan aktivieren“.");
+                ui::hint_long(
+                    ui,
+                    "hint_catchup",
+                    "Änderungen gelten erst nach „Zeitplan aktivieren“. Verpasste Läufe werden nachgeholt.",
+                    "War der PC zur geplanten Zeit aus, wird das Backup beim nächsten Anmelden bzw. Start nachgeholt (einmal, auch nach mehreren Tagen). Ist das NAS dann noch nicht erreichbar, versucht der Lauf es bis zu 5 Minuten lang erneut.",
+                );
                 #[cfg(windows)]
                 ui::hint(ui, "Der Taskplaner-Task läuft unter deinem Benutzer und nutzt die Freigabe direkt per UNC-Pfad.");
             });
@@ -738,13 +988,13 @@ impl App {
                         }
                     };
                 }
-                ui::hint(ui, "Der Zeitplan läuft unabhängig davon. War der PC zur geplanten Zeit aus, wird das Backup beim nächsten Anmelden bzw. Start nachgeholt (einmal, auch nach mehreren Tagen). Ist das NAS dann noch nicht erreichbar, versucht der Lauf es bis zu 5 Minuten lang erneut.");
+                ui::hint(ui, "Der Zeitplan läuft unabhängig vom Autostart.");
                 #[cfg(unix)]
-                ui::hint(ui, "Linux: Der Timer läuft nur bei angemeldetem Benutzer. Für Backups auch ohne Anmeldung: sudo loginctl enable-linger $USER");
+                ui::hint_long(ui, "hint_linger", "Linux: Der Timer läuft nur bei angemeldetem Benutzer.", "Für Backups auch ohne Anmeldung: sudo loginctl enable-linger $USER");
             });
             #[cfg(unix)]
             ui::card(ui, Some("Automatisches Einbinden (Linux)"), |ui| {
-                ui::hint(ui, "Geplante Läufe können keinen pkexec-Dialog bestätigen. Trage diese Zeile in /etc/fstab ein (als root); danach mountet die App ohne Rückfrage:");
+                ui::hint_long(ui, "hint_fstab", "Geplante Läufe brauchen einen fstab-Eintrag (als root).", "Geplante Läufe können keinen pkexec-Dialog bestätigen. Trage diese Zeile in /etc/fstab ein (als root); danach mountet die App ohne Rückfrage:");
                 let mut line = smb::fstab_line(&self.cfg).unwrap_or_default();
                 ui.add(egui::TextEdit::multiline(&mut line).code_editor().desired_rows(3).desired_width(f32::INFINITY));
                 if ui.button("Credentials-Datei anlegen (SMB-Passwort aus Keyring)").clicked() {
@@ -753,6 +1003,7 @@ impl App {
                         Err(e) => format!("FEHLER: {e:#}"),
                     };
                 }
+            });
             });
         });
     }
@@ -809,8 +1060,17 @@ impl Drop for App {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    // `logic` läuft auch bei verstecktem Fenster (Tray): Meldungen der Threads und Tray-Menü werden hier verarbeitet
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
+        if self.pending_overview && !self.busy {
+            self.pending_overview = false;
+            self.load_overview(ctx);
+        }
+        self.handle_tray(ctx);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.sidebar(ui);
         egui::CentralPanel::default().frame(Frame::new().fill(ui::BG).inner_margin(Margin::same(22))).show(ui, |ui| match self.tab {
             Tab::Backup => self.backup_tab(ui),

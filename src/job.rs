@@ -56,6 +56,20 @@ pub fn describe_repo(cfg: &Config) -> Result<String> {
     })
 }
 
+/// Kennzahlen des Repos für die Übersicht.
+#[derive(Debug, Clone)]
+pub struct RepoOverview {
+    pub size: u64,
+    pub snapshots: usize,
+    pub free: Option<u64>,
+}
+
+pub fn repo_overview(cfg: &Config) -> Result<RepoOverview> {
+    let r = open(cfg)?;
+    let stats = r.stats()?;
+    Ok(RepoOverview { size: stats.size, snapshots: r.snapshots()?.len(), free: smb::free_space(&r.repo) })
+}
+
 /// Sichert die Quellordner: entweder alle in einem Snapshot oder (`separate_snapshots`) je Ordner einen.
 /// Schlägt nur ein Teil der Ordner fehl, gilt der Lauf als Warnung; schlagen alle fehl, ist es ein Fehler.
 fn backup_sources(r: &Restic, cfg: &Config, host: &str, cancel: &AtomicBool, mut log: impl FnMut(String), mut on_event: impl FnMut(BackupEvent)) -> Result<BackupOutcome> {
@@ -119,6 +133,22 @@ pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log
         let outcome = backup_sources(&r, cfg, &host, cancel, &mut log, on_event)?;
         log("Räume alte Snapshots auf …".into());
         r.forget(cfg.keep_daily, cfg.keep_weekly, cfg.keep_monthly, &host)?;
+        let mut outcome = outcome;
+        // Regelmäßige Teilprüfung nur im Zeitplan-Lauf; ein Fehler dort ist eine Warnung, kein Backup-Fehler
+        if !keep_mounted && crate::config::check_due(crate::config::read_last_check().as_ref(), cfg.check_interval_days, chrono::Local::now().naive_local()) {
+            log(format!("Prüfe Repository ({} % der Daten) …", cfg.check_subset_percent));
+            match r.check_subset(cfg.check_subset_percent) {
+                Ok(()) => {
+                    crate::config::write_last_check(true);
+                    log("Repository-Prüfung bestanden.".into());
+                }
+                Err(e) => {
+                    crate::config::write_last_check(false);
+                    log(format!("Warnung: Repository-Prüfung fehlgeschlagen: {e:#}"));
+                    outcome.warnings = true;
+                }
+            }
+        }
         Ok(outcome)
     })();
     if !keep_mounted {
@@ -195,5 +225,24 @@ mod tests {
         assert_eq!(r.snapshots().unwrap().len(), 1);
         cfg.sources.remove(0);
         assert!(backup_sources(&r, &cfg, "testhost", &AtomicBool::new(false), |_| {}, |_| {}).is_err());
+    }
+
+    #[test]
+    fn stats_diff_and_check_subset_work() {
+        if !restic_available() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let (r, mut cfg) = setup(d.path(), &["admin"]);
+        cfg.separate_snapshots = true;
+        backup_sources(&r, &cfg, "testhost", &AtomicBool::new(false), |_| {}, |_| {}).unwrap();
+        std::fs::write(d.path().join("admin").join("neu.txt"), "neu").unwrap();
+        backup_sources(&r, &cfg, "testhost", &AtomicBool::new(false), |_| {}, |_| {}).unwrap();
+        let snaps = r.snapshots().unwrap();
+        assert_eq!(snaps.len(), 2);
+        assert!(r.stats().unwrap().size > 0);
+        r.check_subset(50).unwrap();
+        let diff = r.diff(&snaps[0].id, &snaps[1].id).unwrap();
+        assert!(diff.iter().any(|e| e.modifier == "+" && e.path.ends_with("neu.txt")));
     }
 }

@@ -11,6 +11,7 @@ url='https://github.com/Cyberhunter88/restic-backup-app'
 license=('MIT')
 depends=('restic' 'cifs-utils' 'polkit' 'gtk3' 'libxkbcommon' 'wayland' 'dbus')
 makedepends=('cargo')
+optdepends=('libayatana-appindicator: Tray-Icon')
 options=('!lto')
 
 build() {

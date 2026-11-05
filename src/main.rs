@@ -5,10 +5,12 @@ mod app;
 mod autostart;
 mod config;
 mod job;
+mod notify;
 mod restic;
 mod schedule;
 mod secrets;
 mod smb;
+mod tray;
 mod ui;
 mod update;
 
@@ -30,9 +32,10 @@ fn run_headless() -> anyhow::Result<()> {
     let mut lines: Vec<String> = vec![];
     let result = job::run_backup(&cfg, false, &std::sync::atomic::AtomicBool::new(false), |m| lines.push(m), |_| {});
     match &result {
-        Ok(_) => lines.push("Backup abgeschlossen.".into()),
+        Ok(o) => lines.push(if o.warnings { "Backup mit Warnungen abgeschlossen." } else { "Backup abgeschlossen." }.into()),
         Err(e) => lines.push(format!("FEHLER: {e:#}")),
     }
+    notify::backup_finished(result.as_ref().is_ok_and(|o| o.warnings), result.as_ref().err().map(|e| format!("{e:#}")).as_deref());
     let _ = config::write_last_run(result.is_ok(), &lines);
     for l in &lines {
         println!("{l}");
@@ -55,10 +58,13 @@ fn main() -> anyhow::Result<()> {
         eframe::NativeOptions { viewport, ..Default::default() },
         Box::new(|cc| {
             ui::apply_theme(&cc.egui_ctx);
+            let app = app::App::new(&cc.egui_ctx);
             if cli.autostart {
-                cc.egui_ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Minimized(true));
+                // Mit Tray ganz verstecken, sonst minimieren
+                let cmd = if app.has_tray() { eframe::egui::ViewportCommand::Visible(false) } else { eframe::egui::ViewportCommand::Minimized(true) };
+                cc.egui_ctx.send_viewport_cmd(cmd);
             }
-            Ok(Box::new(app::App::new()))
+            Ok(Box::new(app))
         }),
     )
     .map_err(|e| anyhow::anyhow!("GUI-Fehler: {e}"))

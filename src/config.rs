@@ -26,6 +26,10 @@ pub struct Config {
     pub keep_daily: u32,
     pub keep_weekly: u32,
     pub keep_monthly: u32,
+    /// Alle so viele Tage prüft ein Zeitplan-Lauf einen Teil der Repo-Daten (0 = aus)
+    pub check_interval_days: u32,
+    /// Anteil der Daten (Prozent), der bei der regelmäßigen Prüfung gelesen wird
+    pub check_subset_percent: u32,
     /// Uhrzeiten (HH:MM), zu denen das Backup läuft
     pub schedule_times: Vec<String>,
     /// Wochentage (Mo..So), an denen der Zeitplan gilt
@@ -53,6 +57,8 @@ impl Default for Config {
             keep_daily: 7,
             keep_weekly: 4,
             keep_monthly: 6,
+            check_interval_days: 7,
+            check_subset_percent: 5,
             schedule_times: vec!["02:00".into()],
             schedule_days: [true; 7],
             schedule_time: String::new(),
@@ -139,6 +145,40 @@ pub fn history_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("history.tsv"))
 }
 
+pub fn last_check_path() -> Result<PathBuf> {
+    Ok(data_dir()?.join("last-check.txt"))
+}
+
+/// Ergebnis der letzten Repository-Prüfung.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LastCheck {
+    pub time: chrono::NaiveDateTime,
+    pub ok: bool,
+}
+
+const CHECK_FMT: &str = "%Y-%m-%d %H:%M:%S";
+
+pub fn write_last_check(ok: bool) {
+    if let Ok(p) = last_check_path() {
+        let _ = std::fs::create_dir_all(p.parent().unwrap());
+        let _ = std::fs::write(p, format!("{}\t{}\n", chrono::Local::now().format(CHECK_FMT), if ok { "ok" } else { "fehler" }));
+    }
+}
+
+pub fn read_last_check() -> Option<LastCheck> {
+    parse_last_check(&std::fs::read_to_string(last_check_path().ok()?).ok()?)
+}
+
+fn parse_last_check(text: &str) -> Option<LastCheck> {
+    let (t, r) = text.trim().split_once('\t')?;
+    Some(LastCheck { time: chrono::NaiveDateTime::parse_from_str(t, CHECK_FMT).ok()?, ok: r == "ok" })
+}
+
+/// Ist eine Prüfung fällig? Ohne bisherige Prüfung: ja (sofern aktiviert).
+pub fn check_due(last: Option<&LastCheck>, interval_days: u32, now: chrono::NaiveDateTime) -> bool {
+    interval_days > 0 && last.is_none_or(|l| now.signed_duration_since(l.time).num_days() >= interval_days as i64)
+}
+
 /// Ein Eintrag im lokalen Verlauf.
 pub struct HistoryEntry {
     pub time: String,
@@ -214,6 +254,19 @@ impl Config {
         Ok(())
     }
 
+    /// Schreibt die Einstellungen in eine Datei (ohne Passwörter, die liegen nur im Schlüsselbund).
+    pub fn export_to(&self, path: &std::path::Path) -> Result<()> {
+        std::fs::write(path, toml::to_string_pretty(self)?).with_context(|| format!("Schreiben von {}", path.display()))
+    }
+
+    /// Liest eine exportierte Konfiguration und prüft sie.
+    pub fn import_from(path: &std::path::Path) -> Result<Self> {
+        let s = std::fs::read_to_string(path).with_context(|| format!("Lesen von {}", path.display()))?;
+        let c = Self::parse(&s).context("Datei ist keine gültige Konfiguration")?;
+        c.validate()?;
+        Ok(c)
+    }
+
     /// Prüft die Eingaben auf Konsistenz.
     pub fn validate(&self) -> Result<()> {
         if self.schedule_times.is_empty() {
@@ -224,6 +277,9 @@ impl Config {
         }
         if !self.schedule_days.iter().any(|d| *d) {
             anyhow::bail!("Mindestens ein Wochentag muss für den Zeitplan gewählt sein");
+        }
+        if !(1..=100).contains(&self.check_subset_percent) {
+            anyhow::bail!("Der Anteil für die Repo-Prüfung muss zwischen 1 und 100 Prozent liegen");
         }
         if self.keep_daily + self.keep_weekly + self.keep_monthly == 0 {
             anyhow::bail!("Mindestens eine Aufbewahrungsregel muss größer als 0 sein");
@@ -255,6 +311,34 @@ mod tests {
         c.sources.push("/home/x".into());
         let s = toml::to_string_pretty(&c).unwrap();
         assert_eq!(toml::from_str::<Config>(&s).unwrap(), c);
+    }
+
+    #[test]
+    fn export_import_roundtrip() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("export.toml");
+        let mut c = Config::default();
+        c.host = "nas".into();
+        c.sources = vec!["/a".into(), "/b".into()];
+        c.export_to(&p).unwrap();
+        assert_eq!(Config::import_from(&p).unwrap(), c);
+        std::fs::write(&p, "das ist {kein toml").unwrap();
+        assert!(Config::import_from(&p).is_err());
+        std::fs::write(&p, "schedule_times = []").unwrap();
+        assert!(Config::import_from(&p).is_err());
+    }
+
+    #[test]
+    fn check_due_rules() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        let l = parse_last_check("2026-10-30 12:00:00\tok\n").unwrap();
+        assert!(l.ok);
+        assert!(!check_due(Some(&l), 7, now));
+        assert!(check_due(Some(&l), 5, now));
+        assert!(check_due(None, 7, now));
+        assert!(!check_due(None, 0, now));
+        assert!(!check_due(Some(&l), 0, now));
+        assert_eq!(parse_last_check("kaputt"), None);
     }
 
     #[test]

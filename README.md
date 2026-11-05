@@ -69,3 +69,6 @@ Release läuft vollautomatisch über GitHub Actions, immer ausgehend von `main`:
 4. Nur wenn alles grün ist: `main` wird auf diesen Stand vorgespult, Tag `vX.Y.Z` und GitHub-Release mit allen Paketen entstehen, der Release-Branch wird gelöscht.
 
 Neue Änderungen vorher im `CHANGELOG.md` unter `## [Unveröffentlicht]` sammeln. Wird `main` später geschützt, ein Personal Access Token mit Schreibrecht (Bypass für den Schutz) als Secret `RELEASE_TOKEN` hinterlegen. Ein manuell gesetzter Tag `v*` löst weiterhin den Build samt Release aus.
+
+## Lizenz
+MIT – siehe [LICENSE](LICENSE).

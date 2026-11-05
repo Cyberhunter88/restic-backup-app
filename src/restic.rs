@@ -109,6 +109,44 @@ pub fn parse_backup_line(line: &str) -> Option<BackupEvent> {
     }
 }
 
+/// Größe des Repos (`restic stats --mode raw-data`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepoStats {
+    pub size: u64,
+}
+
+pub fn parse_stats(output: &str) -> Option<RepoStats> {
+    #[derive(Deserialize)]
+    struct Raw {
+        total_size: u64,
+    }
+    Some(RepoStats { size: serde_json::from_str::<Raw>(output.trim()).ok()?.total_size })
+}
+
+/// Eine Änderung zwischen zwei Snapshots (`modifier`: `+` neu, `-` entfernt, `M` geändert, sonst z. B. `U`/`T`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiffEntry {
+    pub modifier: String,
+    pub path: String,
+}
+
+pub fn parse_diff(output: &str) -> Vec<DiffEntry> {
+    #[derive(Deserialize)]
+    struct Raw {
+        message_type: String,
+        #[serde(default)]
+        path: String,
+        #[serde(default)]
+        modifier: String,
+    }
+    output
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Raw>(l).ok())
+        .filter(|r| r.message_type == "change")
+        .map(|r| DiffEntry { modifier: r.modifier, path: r.path })
+        .collect()
+}
+
 pub fn parse_ls(output: &str) -> Vec<Node> {
     output
         .lines()
@@ -246,6 +284,20 @@ impl Restic {
         self.run(&forget_args(daily, weekly, monthly, host)).map(|_| ())
     }
 
+    pub fn stats(&self) -> Result<RepoStats> {
+        let out = self.run(&Self::s(&["stats", "--json", "--mode", "raw-data"]))?;
+        parse_stats(&out).context("Unerwartete Ausgabe von restic stats")
+    }
+
+    pub fn diff(&self, a: &str, b: &str) -> Result<Vec<DiffEntry>> {
+        Ok(parse_diff(&self.run(&["diff".into(), "--json".into(), a.into(), b.into()])?))
+    }
+
+    /// Prüft die Struktur und liest einen Teil der Daten (`--read-data-subset=N%`).
+    pub fn check_subset(&self, percent: u32) -> Result<()> {
+        self.run(&["check".into(), format!("--read-data-subset={percent}%")]).map(|_| ())
+    }
+
     pub fn check(&self) -> Result<()> {
         self.run(&Self::s(&["check"])).map(|_| ())
     }
@@ -326,6 +378,20 @@ mod tests {
         let n = parse_ls(o);
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].size, 3);
+    }
+
+    #[test]
+    fn diff_parsed() {
+        let o = "{\"message_type\":\"change\",\"path\":\"/a\",\"modifier\":\"-\"}\n{\"message_type\":\"change\",\"path\":\"/b\",\"modifier\":\"+\"}\n{\"message_type\":\"statistics\"}\n";
+        let d = parse_diff(o);
+        assert_eq!(d.len(), 2);
+        assert_eq!(d[1], DiffEntry { modifier: "+".into(), path: "/b".into() });
+    }
+
+    #[test]
+    fn stats_parsed() {
+        assert_eq!(parse_stats("{\"total_size\":2048,\"total_blob_count\":3}\n"), Some(RepoStats { size: 2048 }));
+        assert_eq!(parse_stats("kaputt"), None);
     }
 
     #[test]
