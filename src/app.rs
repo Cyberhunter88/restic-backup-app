@@ -16,7 +16,7 @@ enum Msg {
     Snaps(Result<Vec<Snapshot>, String>),
     Nodes(Result<Vec<Node>, String>),
     Info(Result<String, String>),
-    Update(Result<update::Latest, String>),
+    RepoInfo(Result<String, String>),
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -35,8 +35,7 @@ pub struct App {
     repo_pw: String,
     new_exclude: String,
     new_marker: String,
-    update_msg: String,
-    update_url: Option<String>,
+    repo_msg: String,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     busy: bool,
@@ -62,8 +61,7 @@ impl App {
             repo_pw: String::new(),
             new_exclude: String::new(),
             new_marker: String::new(),
-            update_msg: String::new(),
-            update_url: None,
+            repo_msg: String::new(),
             tx,
             rx,
             busy: false,
@@ -124,16 +122,9 @@ impl App {
                         Err(e) => self.status = e,
                     }
                 }
-                Msg::Update(r) => {
+                Msg::RepoInfo(r) => {
                     self.busy = false;
-                    match r {
-                        Ok(l) if update::is_newer(&l.version, env!("CARGO_PKG_VERSION")) => {
-                            self.update_msg = format!("Neue Version {} verfügbar (installiert: {}).", l.version, env!("CARGO_PKG_VERSION"));
-                            self.update_url = Some(l.url);
-                        }
-                        Ok(_) => self.update_msg = "Du verwendest die neueste Version.".into(),
-                        Err(e) => self.update_msg = format!("FEHLER: {e}"),
-                    }
+                    self.repo_msg = r.unwrap_or_else(|e| format!("FEHLER: {e}"));
                 }
                 Msg::Info(r) => {
                     self.busy = false;
@@ -331,12 +322,15 @@ impl App {
             ui.checkbox(&mut self.cfg.allow_init, "Neues Repo anlegen, falls keins existiert");
             if ui.add_enabled(!self.busy, egui::Button::new("Repo prüfen")).clicked() {
                 let cfg = self.cfg.clone();
-                self.status = "Prüfe Repository …".into();
+                self.repo_msg = "Prüfe Repository …".into();
                 self.spawn(ui.ctx(), move |tx| {
-                    let _ = tx.send(Msg::Info(job::describe_repo(&cfg).map_err(|e| format!("{e:#}"))));
+                    let _ = tx.send(Msg::RepoInfo(job::describe_repo(&cfg).map_err(|e| format!("{e:#}"))));
                 });
             }
         });
+        if !self.repo_msg.is_empty() {
+            ui.label(egui::RichText::new(&self.repo_msg).strong());
+        }
         ui.label("Bestehendes restic-Repo verwenden: Freigabe und Unterordner wie im Repo angeben, Repo-Passwort eintragen, dann „Repo prüfen“.");
         ui.separator();
         ui.label("Quellordner:");
@@ -438,20 +432,11 @@ impl App {
         ui.heading("restic Backup");
         ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
         ui.separator();
-        if ui.add_enabled(!self.busy, egui::Button::new("Nach Updates suchen")).clicked() {
-            self.update_msg = "Suche …".into();
-            self.update_url = None;
-            self.spawn(ui.ctx(), move |tx| {
-                let _ = tx.send(Msg::Update(update::fetch_latest().map_err(|e| format!("{e:#}"))));
-            });
+        ui.label("Neue Versionen stehen auf der Releases-Seite auf GitHub (Anmeldung im Browser erforderlich).");
+        if ui.button("Neue Versionen ansehen").clicked() {
+            update::open_url(update::RELEASES_URL);
         }
-        ui.label(&self.update_msg);
-        if let Some(url) = self.update_url.clone() {
-            if ui.button("Download-Seite öffnen").clicked() {
-                update::open_url(&url);
-            }
-            ui.label("Neues Setup (Windows) bzw. .deb/AppImage (Linux) installieren – Einstellungen und Passwörter bleiben erhalten.");
-        }
+        ui.label("Update: neues Setup (Windows) bzw. .deb/AppImage (Linux) installieren – Einstellungen und Passwörter bleiben erhalten.");
     }
 
     fn schedule_tab(&mut self, ui: &mut egui::Ui) {
@@ -520,6 +505,7 @@ impl eframe::App for App {
                 if ui.selectable_label(self.tab == t, name).clicked() {
                     self.tab = t;
                     self.status.clear();
+                    self.repo_msg.clear();
                 }
             }
         });
@@ -527,8 +513,8 @@ impl eframe::App for App {
         match self.tab {
             Tab::Backup => self.backup_tab(ui),
             Tab::Snapshots => self.snapshots_tab(ui),
-            Tab::Settings => self.settings_tab(ui),
-            Tab::Schedule => self.schedule_tab(ui),
+            Tab::Settings => egui::ScrollArea::vertical().id_salt("settings_scroll").auto_shrink(false).show(ui, |ui| self.settings_tab(ui)).inner,
+            Tab::Schedule => egui::ScrollArea::vertical().id_salt("schedule_scroll").auto_shrink(false).show(ui, |ui| self.schedule_tab(ui)).inner,
             Tab::About => self.about_tab(ui),
         }
     }

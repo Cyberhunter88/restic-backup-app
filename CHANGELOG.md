@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.1]
+
+### Behoben
+- Windows-Setup lieferte nur einen Chocolatey-Shim statt der echten `restic.exe` mit; die App findet jetzt das mitgelieferte restic und fällt auf das restic aus dem PATH zurück, falls es nicht startet.
+
 ## [0.2.0]
 
 ### Neu
