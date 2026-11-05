@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unveröffentlicht]
+
+### Neu
+- Neue Oberfläche: dunkles Theme mit Akzentfarbe, Seitenleiste, Karten-Layout, farbige Statusmeldungen.
+- Backup-Tab: Status-Badge des letzten Laufs, Kennzahlen, Fortschrittskarte, farbiges Protokoll.
+- Snapshots: automatisches Laden, Filterfeld, Tabelle mit lesbarer Zeit, Dateigrößen in KB/MB/GB, Link zum Zielordner nach Wiederherstellung.
+- Einstellungen in Bereiche gegliedert, Speichern-Leiste bleibt unten sichtbar, Enter fügt Ausschlüsse hinzu.
+
+### Behoben
+- Das Protokoll des letzten Laufs wird nicht mehr bei jedem Frame von der Platte gelesen.
+
 ## [0.2.1]
 
 ### Behoben
