@@ -24,8 +24,13 @@ pub struct Config {
     pub keep_daily: u32,
     pub keep_weekly: u32,
     pub keep_monthly: u32,
-    /// Uhrzeit (HH:MM) für das tägliche Backup
-    pub schedule_time: String,
+    /// Uhrzeiten (HH:MM), zu denen das Backup läuft
+    pub schedule_times: Vec<String>,
+    /// Wochentage (Mo..So), an denen der Zeitplan gilt
+    pub schedule_days: [bool; 7],
+    /// Alte Einstellung (nur zum Übernehmen älterer Konfigurationen)
+    #[serde(skip_serializing)]
+    schedule_time: String,
     pub restic_bin: String,
 }
 
@@ -45,7 +50,9 @@ impl Default for Config {
             keep_daily: 7,
             keep_weekly: 4,
             keep_monthly: 6,
-            schedule_time: "02:00".into(),
+            schedule_times: vec!["02:00".into()],
+            schedule_days: [true; 7],
+            schedule_time: String::new(),
             restic_bin: default_restic_bin(),
         }
     }
@@ -96,8 +103,47 @@ pub fn last_run_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("last-run.log"))
 }
 
-/// Schreibt das Protokoll des letzten Laufs (Zeitplan oder GUI) in `last-run.log`.
+pub fn history_path() -> Result<PathBuf> {
+    Ok(data_dir()?.join("history.tsv"))
+}
+
+/// Ein Eintrag im lokalen Verlauf.
+pub struct HistoryEntry {
+    pub time: String,
+    pub ok: bool,
+    pub summary: String,
+}
+
+const HISTORY_MAX: usize = 200;
+
+fn append_history(ok: bool, lines: &[String]) -> Result<()> {
+    let p = history_path()?;
+    let summary = lines.iter().rev().find(|l| l.starts_with("Snapshot")).or(lines.last()).cloned().unwrap_or_default().replace(['\t', '\n'], " ");
+    let line = format!("{}\t{}\t{}", chrono::Local::now().format("%d.%m.%Y %H:%M"), if ok { "ok" } else { "fehler" }, summary);
+    let mut all: Vec<String> = std::fs::read_to_string(&p).unwrap_or_default().lines().map(String::from).collect();
+    all.push(line);
+    let skip = all.len().saturating_sub(HISTORY_MAX);
+    std::fs::write(&p, all[skip..].join("\n") + "\n")?;
+    Ok(())
+}
+
+/// Die letzten `n` Läufe, neueste zuerst.
+pub fn read_history(n: usize) -> Vec<HistoryEntry> {
+    let Ok(p) = history_path() else { return vec![] };
+    let text = std::fs::read_to_string(p).unwrap_or_default();
+    text.lines()
+        .rev()
+        .take(n)
+        .filter_map(|l| {
+            let mut it = l.splitn(3, '\t');
+            Some(HistoryEntry { time: it.next()?.into(), ok: it.next()? == "ok", summary: it.next().unwrap_or("").into() })
+        })
+        .collect()
+}
+
+/// Schreibt das Protokoll des letzten Laufs (Zeitplan oder GUI) in `last-run.log` und ergänzt den Verlauf.
 pub fn write_last_run(ok: bool, lines: &[String]) -> Result<()> {
+    let _ = append_history(ok, lines);
     let p = last_run_path()?;
     std::fs::create_dir_all(p.parent().unwrap())?;
     let head = format!("{} – {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), if ok { "ERFOLGREICH" } else { "FEHLER" });
@@ -117,7 +163,16 @@ impl Config {
             return Ok(Self::default());
         }
         let s = std::fs::read_to_string(&p).with_context(|| format!("Lesen von {}", p.display()))?;
-        Ok(toml::from_str(&s)?)
+        Self::parse(&s)
+    }
+
+    fn parse(s: &str) -> Result<Self> {
+        let mut c: Self = toml::from_str(s)?;
+        // Ältere Konfiguration mit nur einer Uhrzeit übernehmen
+        if !s.contains("schedule_times") && !c.schedule_time.is_empty() {
+            c.schedule_times = vec![c.schedule_time.clone()];
+        }
+        Ok(c)
     }
 
     pub fn save(&self) -> Result<()> {
@@ -129,7 +184,15 @@ impl Config {
 
     /// Prüft die Eingaben auf Konsistenz.
     pub fn validate(&self) -> Result<()> {
-        crate::schedule::parse_time(&self.schedule_time).context("Ungültige Uhrzeit (HH:MM)")?;
+        if self.schedule_times.is_empty() {
+            anyhow::bail!("Mindestens eine Uhrzeit für den Zeitplan angeben");
+        }
+        for t in &self.schedule_times {
+            crate::schedule::parse_time(t).with_context(|| format!("Ungültige Uhrzeit „{t}“ (HH:MM)"))?;
+        }
+        if !self.schedule_days.iter().any(|d| *d) {
+            anyhow::bail!("Mindestens ein Wochentag muss für den Zeitplan gewählt sein");
+        }
         if self.keep_daily + self.keep_weekly + self.keep_monthly == 0 {
             anyhow::bail!("Mindestens eine Aufbewahrungsregel muss größer als 0 sein");
         }
@@ -158,13 +221,27 @@ mod tests {
     fn validate_rules() {
         let mut c = Config::default();
         assert!(c.validate().is_ok());
-        c.schedule_time = "99:99".into();
+        c.schedule_times = vec!["99:99".into()];
         assert!(c.validate().is_err());
-        c.schedule_time = "02:00".into();
+        c.schedule_times = vec![];
+        assert!(c.validate().is_err());
+        c.schedule_times = vec!["02:00".into(), "14:30".into()];
+        assert!(c.validate().is_ok());
+        c.schedule_days = [false; 7];
+        assert!(c.validate().is_err());
+        c.schedule_days = [true; 7];
         c.keep_daily = 0;
         c.keep_weekly = 0;
         c.keep_monthly = 0;
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn old_single_time_is_migrated() {
+        let c = Config::parse("schedule_time = \"04:15\"").unwrap();
+        assert_eq!(c.schedule_times, vec!["04:15".to_string()]);
+        let c = Config::parse("schedule_times = [\"01:00\", \"13:00\"]").unwrap();
+        assert_eq!(c.schedule_times.len(), 2);
     }
 
     #[test]

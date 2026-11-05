@@ -6,7 +6,7 @@ Desktop-App für [restic](https://restic.net)-Backups auf ein NAS (SMB-Freigabe)
 - Backup auf SMB-Freigabe (Windows: UNC-Pfad, Linux: `mount.cifs`)
 - Bestehende restic-Repos weiterverwenden oder neue anlegen
 - Ausschlüsse: Muster, `CACHEDIR.TAG`, Markerdateien (`.nobackup`), Größenlimit
-- Täglicher Zeitplan (Windows: Aufgabenplanung, Linux: systemd-User-Timer)
+- Zeitplan mit mehreren Uhrzeiten pro Tag und Wochentagen (Windows: Aufgabenplanung, Linux: systemd-User-Timer), Verlauf der letzten Läufe
 - Snapshots durchsuchen, Dateien oder ganze Snapshots wiederherstellen
 - Aufbewahrungsregeln (täglich/wöchentlich/monatlich) mit automatischem `forget --prune`
 - Passwörter liegen im System-Schlüsselbund, nicht in der Konfigurationsdatei
@@ -31,7 +31,7 @@ Die aktuellen Pakete stehen unter [Releases](../../releases/latest).
 1. **Einstellungen:** NAS-Host, Freigabe, Unterordner des Repos, SMB-Benutzer/-Passwort, Repo-Passwort und Quellordner eintragen, speichern.
 2. **Bestehendes Repo nutzen:** Unterordner auf das vorhandene Repo setzen, Repo-Passwort eintragen und **Repo prüfen** klicken. Ein neues Repo wird nur angelegt, wenn „Neues Repo anlegen“ aktiviert ist.
 3. **Ausschlüsse:** Muster wie `*.tmp` oder `node_modules`; „Übliche Ausschlüsse“ fügt eine Vorlage hinzu.
-4. **Zeitplan:** Uhrzeit setzen und aktivieren. Unter Linux die angezeigte `/etc/fstab`-Zeile eintragen, damit geplante Läufe ohne pkexec-Dialog mounten können.
+4. **Zeitplan:** Uhrzeiten (z. B. „Alle 6 Stunden“) und Wochentage wählen, dann „Zeitplan aktivieren“. Unter Linux die angezeigte `/etc/fstab`-Zeile eintragen, damit geplante Läufe ohne pkexec-Dialog mounten können.
 
 Das Ergebnis des letzten Laufs steht im Backup-Tab (`last-run.log` im Datenverzeichnis der App).
 

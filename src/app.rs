@@ -47,6 +47,7 @@ pub struct App {
     repo_pw: String,
     new_exclude: String,
     new_marker: String,
+    new_time: String,
     repo_msg: String,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
@@ -55,6 +56,7 @@ pub struct App {
     log: Vec<String>,
     /// Protokoll des letzten Laufs (einmal geladen statt bei jedem Frame von der Platte)
     last_run: Option<String>,
+    history: Vec<crate::config::HistoryEntry>,
     snapshots: Vec<Snapshot>,
     snaps_loaded: bool,
     snap_filter: String,
@@ -107,6 +109,7 @@ impl App {
             repo_pw: String::new(),
             new_exclude: String::new(),
             new_marker: String::new(),
+            new_time: "12:00".into(),
             repo_msg: String::new(),
             tx,
             rx,
@@ -114,6 +117,7 @@ impl App {
             progress: 0.0,
             log: vec![],
             last_run: crate::config::read_last_run(),
+            history: crate::config::read_history(8),
             snapshots: vec![],
             snaps_loaded: false,
             snap_filter: String::new(),
@@ -155,6 +159,7 @@ impl App {
                     });
                     let _ = crate::config::write_last_run(ok, &self.log);
                     self.last_run = crate::config::read_last_run();
+                    self.history = crate::config::read_history(8);
                     self.snaps_loaded = false;
                 }
                 Msg::Snaps(r) => {
@@ -203,6 +208,18 @@ impl App {
         self.repo_msg.clear();
         if tab == Tab::Snapshots && !self.snaps_loaded && !self.busy && self.cfg.is_ready() {
             self.load_snapshots(ctx);
+        }
+    }
+
+    /// Kurztext zum Zeitplan, z. B. „3× täglich“ oder „2× an 5 Tagen“.
+    fn schedule_summary(&self) -> String {
+        let n = self.cfg.schedule_times.len();
+        let days = self.cfg.schedule_days.iter().filter(|d| **d).count();
+        match (n, days) {
+            (0, _) | (_, 0) => "aus".into(),
+            (1, 7) => format!("täglich {}", self.cfg.schedule_times[0]),
+            (n, 7) => format!("{n}× täglich"),
+            (n, d) => format!("{n}× an {d} Tagen"),
         }
     }
 
@@ -277,7 +294,7 @@ impl App {
             let n = self.cfg.sources.len();
             let facts = [
                 ("Quellordner".to_string(), format!("{n}")),
-                ("Täglich um".to_string(), format!("{} Uhr", self.cfg.schedule_time)),
+                ("Zeitplan".to_string(), self.schedule_summary()),
                 ("Aufbewahrung".to_string(), format!("{}T / {}W / {}M", self.cfg.keep_daily, self.cfg.keep_weekly, self.cfg.keep_monthly)),
             ];
             for (col, (label, value)) in cols.iter_mut().zip(facts) {
@@ -297,6 +314,19 @@ impl App {
                     ui.add(egui::ProgressBar::new(self.progress).show_percentage().animate(true).desired_width(ui.available_width() - 110.0));
                     if ui.button("Abbrechen").clicked() {
                         self.cancel.store(true, Ordering::Relaxed);
+                    }
+                });
+            });
+        }
+
+        if !self.history.is_empty() {
+            ui::card(ui, Some("Verlauf"), |ui| {
+                egui::Grid::new("history").num_columns(3).striped(true).spacing([16.0, 6.0]).show(ui, |ui| {
+                    for h in &self.history {
+                        ui.label(RichText::new(&h.time).color(MUTED));
+                        if h.ok { ui::badge(ui, "OK", OK) } else { ui::badge(ui, "Fehler", ERR) }
+                        ui.label(&h.summary);
+                        ui.end_row();
                     }
                 });
             });
@@ -621,15 +651,62 @@ impl App {
         ui.heading("Zeitplan");
         ui.add_space(4.0);
         egui::ScrollArea::vertical().id_salt("schedule_scroll").auto_shrink(false).show(ui, |ui| {
-            ui::card(ui, Some("Tägliches Backup"), |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Uhrzeit (HH:MM)");
-                    ui.add(egui::TextEdit::singleline(&mut self.cfg.schedule_time).desired_width(80.0));
+            ui::card(ui, Some("Wann soll gesichert werden?"), |ui| {
+                ui.label("Schnellauswahl");
+                ui.horizontal_wrapped(|ui| {
+                    for (name, times) in [
+                        ("1× täglich", &["02:00"][..]),
+                        ("2× täglich", &["08:00", "20:00"]),
+                        ("Alle 6 Stunden", &["00:00", "06:00", "12:00", "18:00"]),
+                        ("Alle 3 Stunden", &["00:00", "03:00", "06:00", "09:00", "12:00", "15:00", "18:00", "21:00"]),
+                        ("Stündlich", &["00:00", "01:00", "02:00", "03:00", "04:00", "05:00", "06:00", "07:00", "08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00", "20:00", "21:00", "22:00", "23:00"]),
+                    ] {
+                        if ui.button(name).clicked() {
+                            self.cfg.schedule_times = times.iter().map(|t| t.to_string()).collect();
+                        }
+                    }
                 });
+                ui.separator();
+                ui.label("Uhrzeiten");
+                let mut del = None;
+                ui.horizontal_wrapped(|ui| {
+                    for (i, t) in self.cfg.schedule_times.iter().enumerate() {
+                        if ui.button(format!("{t}  ✖")).on_hover_text("Entfernen").clicked() {
+                            del = Some(i);
+                        }
+                    }
+                });
+                if let Some(i) = del {
+                    self.cfg.schedule_times.remove(i);
+                }
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.new_time).hint_text("HH:MM").desired_width(80.0));
+                    if ui.button("＋ Uhrzeit hinzufügen").clicked() {
+                        match schedule::parse_time(self.new_time.trim()) {
+                            Ok((h, m)) => {
+                                let t = format!("{h:02}:{m:02}");
+                                if !self.cfg.schedule_times.contains(&t) {
+                                    self.cfg.schedule_times.push(t);
+                                    self.cfg.schedule_times.sort();
+                                }
+                                self.status.clear();
+                            }
+                            Err(_) => self.status = "FEHLER: Uhrzeit bitte als HH:MM angeben (z. B. 14:30).".into(),
+                        }
+                    }
+                });
+                ui.separator();
+                ui.label("Wochentage");
+                ui.horizontal(|ui| {
+                    for (i, d) in ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"].iter().enumerate() {
+                        ui.toggle_value(&mut self.cfg.schedule_days[i], *d);
+                    }
+                });
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     if ui.add(ui::primary("Zeitplan aktivieren")).clicked() {
-                        self.status = match self.cfg.save().and_then(|_| schedule::install(&self.cfg.schedule_time)) {
-                            Ok(()) => "Zeitplan aktiv.".into(),
+                        self.status = match self.cfg.validate().and_then(|_| self.cfg.save()).and_then(|_| schedule::install(&self.cfg.schedule_times, &self.cfg.schedule_days)) {
+                            Ok(()) => format!("Zeitplan aktiv: {}.", self.schedule_summary()),
                             Err(e) => format!("FEHLER: {e:#}"),
                         };
                     }
@@ -641,6 +718,7 @@ impl App {
                     }
                 });
                 ui::status(ui, &self.status);
+                ui::hint(ui, "Verpasste Läufe (Rechner war aus) holt der Zeitplan beim nächsten Start nach. Änderungen gelten erst nach „Zeitplan aktivieren“.");
                 #[cfg(windows)]
                 ui::hint(ui, "Der Taskplaner-Task läuft unter deinem Benutzer und nutzt die Freigabe direkt per UNC-Pfad.");
             });
