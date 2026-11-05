@@ -12,6 +12,8 @@ pub struct Config {
     pub subpath: String,
     pub smb_user: String,
     pub sources: Vec<String>,
+    /// Jeden Quellordner als eigenen Snapshot sichern (statt aller Ordner in einem)
+    pub separate_snapshots: bool,
     pub excludes: Vec<String>,
     /// Verzeichnisse mit CACHEDIR.TAG ausschließen
     pub exclude_caches: bool,
@@ -42,6 +44,7 @@ impl Default for Config {
             subpath: "restic-repo".into(),
             smb_user: String::new(),
             sources: vec![],
+            separate_snapshots: false,
             excludes: vec![],
             exclude_caches: false,
             exclude_if_present: vec![],

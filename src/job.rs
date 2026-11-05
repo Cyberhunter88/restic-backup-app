@@ -74,19 +74,44 @@ pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log
             RepoState::WrongPassword => bail!("Repo-Passwort ist falsch"),
             RepoState::Error(e) => bail!("Repository nicht erreichbar: {e}"),
         }
-        log("Sichere Daten …".into());
-        let outcome = r.backup(
-            &BackupOptions {
-                sources: &cfg.sources,
-                excludes: &cfg.excludes,
-                exclude_caches: cfg.exclude_caches,
-                exclude_if_present: &cfg.exclude_if_present,
-                exclude_larger_than: &cfg.exclude_larger_than,
-                host: &host,
-            },
-            cancel,
-            on_event,
-        )?;
+        // Entweder ein Snapshot mit allen Ordnern oder je Ordner ein eigener Snapshot
+        let groups: Vec<&[String]> = if cfg.separate_snapshots { cfg.sources.chunks(1).collect() } else { vec![&cfg.sources[..]] };
+        let mut outcome = BackupOutcome::default();
+        let mut errors = vec![];
+        let mut on_event = on_event;
+        for group in &groups {
+            if cancel.load(Ordering::Relaxed) {
+                bail!("Backup abgebrochen");
+            }
+            log(if cfg.separate_snapshots { format!("Sichere {} …", group[0]) } else { "Sichere Daten …".into() });
+            let res = r.backup(
+                &BackupOptions {
+                    sources: group,
+                    excludes: &cfg.excludes,
+                    exclude_caches: cfg.exclude_caches,
+                    exclude_if_present: &cfg.exclude_if_present,
+                    exclude_larger_than: &cfg.exclude_larger_than,
+                    host: &host,
+                },
+                cancel,
+                &mut on_event,
+            );
+            match res {
+                Ok(o) => outcome.warnings |= o.warnings,
+                Err(e) if cancel.load(Ordering::Relaxed) => return Err(e),
+                Err(e) => {
+                    log(format!("Fehler bei {}: {e:#}", group.join(", ")));
+                    errors.push(format!("{}: {e:#}", group.join(", ")));
+                }
+            }
+        }
+        if errors.len() == groups.len() {
+            bail!("{}", errors.join("\n"));
+        }
+        if !errors.is_empty() {
+            outcome.warnings = true;
+            log(format!("Warnung: {} von {} Ordnern konnten nicht gesichert werden.", errors.len(), groups.len()));
+        }
         if outcome.warnings {
             log("Warnung: Einige Dateien waren nicht lesbar und wurden übersprungen.".into());
         }
