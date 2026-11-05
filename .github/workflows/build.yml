@@ -2,10 +2,16 @@ name: build
 
 on:
   push:
-    branches: ["**"]
+    branches-ignore: ["release/**"]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  # Wird vom Release-Workflow aufgerufen (Build eines Release-Branches)
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -23,6 +29,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 

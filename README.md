@@ -51,6 +51,10 @@ Voraussetzungen: Rust (stable), restic im PATH (für die Integrationstests). Lin
 Einmalig nach dem Klonen aktivieren: `git config core.hooksPath .githooks` – der `pre-push`-Hook blockiert Pushes direkt auf `master`. (GitHub-Branch-Protection ist bei privaten Repos im Free-Plan nicht verfügbar; sie lässt sich nachrüsten, sobald das Repo öffentlich ist oder ein Pro-Plan vorhanden ist.)
 
 ### Release
-1. Branch: Version in `Cargo.toml` erhöhen und `CHANGELOG.md` ergänzen, PR mergen.
-2. Tag auf `master` setzen und pushen: `git tag vX.Y.Z && git push origin vX.Y.Z`.
-3. Der Workflow baut Windows-Setup, portable `.exe`, `.deb` und AppImage und veröffentlicht sie als GitHub-Release (der Tag muss zur Cargo-Version passen).
+Release läuft vollautomatisch über GitHub Actions, immer ausgehend von `master`:
+1. GitHub → **Actions** → Workflow **release** → **Run workflow** (Branch `master`), Versionsnummer eingeben (z. B. `0.3.1`).
+2. Der Workflow prüft die Version (X.Y.Z, größer als die aktuelle, Tag noch frei), setzt sie in `Cargo.toml`/`Cargo.lock` und benennt den Abschnitt „Unveröffentlicht“ im `CHANGELOG.md` um.
+3. Der Stand wird auf `release/vX.Y.Z` gebaut und getestet (Windows-Setup, portable `.exe`, `.deb`, AppImage).
+4. Nur wenn alles grün ist: `master` wird auf diesen Stand vorgespult, Tag `vX.Y.Z` und GitHub-Release mit allen Paketen entstehen, der Release-Branch wird gelöscht.
+
+Neue Änderungen vorher im `CHANGELOG.md` unter `## [Unveröffentlicht]` sammeln. Wird `master` später geschützt, ein Personal Access Token mit Schreibrecht (Bypass für den Schutz) als Secret `RELEASE_TOKEN` hinterlegen. Ein manuell gesetzter Tag `v*` löst weiterhin den Build samt Release aus.
