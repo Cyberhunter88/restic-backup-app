@@ -3,7 +3,7 @@
 ## [Unveröffentlicht]
 
 ### Neu
-- Quellordner: Option „Jeden Ordner als eigenen Snapshot sichern“ (z. B. je ein Snapshot für `C:\Users\admin` und `C:\Users\xyz`). Die Aufbewahrung wird dann je Ordner angewendet; schlägt ein Ordner fehl, werden die übrigen trotzdem gesichert (Lauf gilt als Warnung).
+- Quellordner: Option „Jeden Ordner als eigenen Snapshot sichern“ (z. B. je ein Snapshot für `C:\Users\admin` und `C:\Users\xyz`). Die Aufbewahrung wird dann je Ordner angewendet; schlägt ein Ordner fehl, werden die übrigen trotzdem gesichert (Lauf gilt als Warnung). Beim Umstellen bleiben bereits vorhandene gemeinsame Snapshots bestehen und müssen bei Bedarf manuell gelöscht werden.
 
 ### Behoben
 - Windows: Das Programmsymbol ist jetzt in der .exe eingebettet (vorher zeigten Explorer, Taskleiste und Verknüpfungen das Standard-Symbol).

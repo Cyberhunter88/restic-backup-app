@@ -56,6 +56,48 @@ pub fn describe_repo(cfg: &Config) -> Result<String> {
     })
 }
 
+/// Sichert die Quellordner: entweder alle in einem Snapshot oder (`separate_snapshots`) je Ordner einen.
+/// Schlägt nur ein Teil der Ordner fehl, gilt der Lauf als Warnung; schlagen alle fehl, ist es ein Fehler.
+fn backup_sources(r: &Restic, cfg: &Config, host: &str, cancel: &AtomicBool, mut log: impl FnMut(String), mut on_event: impl FnMut(BackupEvent)) -> Result<BackupOutcome> {
+    let groups: Vec<&[String]> = if cfg.separate_snapshots { cfg.sources.chunks(1).collect() } else { vec![&cfg.sources[..]] };
+    let mut outcome = BackupOutcome::default();
+    let mut errors = vec![];
+    for group in &groups {
+        if cancel.load(Ordering::Relaxed) {
+            bail!("Backup abgebrochen");
+        }
+        log(if cfg.separate_snapshots { format!("Sichere {} …", group[0]) } else { "Sichere Daten …".into() });
+        let res = r.backup(
+            &BackupOptions {
+                sources: group,
+                excludes: &cfg.excludes,
+                exclude_caches: cfg.exclude_caches,
+                exclude_if_present: &cfg.exclude_if_present,
+                exclude_larger_than: &cfg.exclude_larger_than,
+                host,
+            },
+            cancel,
+            &mut on_event,
+        );
+        match res {
+            Ok(o) => outcome.warnings |= o.warnings,
+            Err(e) if cancel.load(Ordering::Relaxed) => return Err(e),
+            Err(e) => {
+                log(format!("Fehler bei {}: {e:#}", group.join(", ")));
+                errors.push(format!("{}: {e:#}", group.join(", ")));
+            }
+        }
+    }
+    if errors.len() == groups.len() {
+        bail!("{}", errors.join("\n"));
+    }
+    if !errors.is_empty() {
+        outcome.warnings = true;
+        log(format!("Warnung: {} von {} Ordnern konnten nicht gesichert werden.", errors.len(), groups.len()));
+    }
+    Ok(outcome)
+}
+
 /// Mount → (init) → Backup → Aufräumen → Unmount.
 pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log: impl FnMut(String), on_event: impl FnMut(BackupEvent)) -> Result<BackupOutcome> {
     cfg.validate()?;
@@ -74,47 +116,7 @@ pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log
             RepoState::WrongPassword => bail!("Repo-Passwort ist falsch"),
             RepoState::Error(e) => bail!("Repository nicht erreichbar: {e}"),
         }
-        // Entweder ein Snapshot mit allen Ordnern oder je Ordner ein eigener Snapshot
-        let groups: Vec<&[String]> = if cfg.separate_snapshots { cfg.sources.chunks(1).collect() } else { vec![&cfg.sources[..]] };
-        let mut outcome = BackupOutcome::default();
-        let mut errors = vec![];
-        let mut on_event = on_event;
-        for group in &groups {
-            if cancel.load(Ordering::Relaxed) {
-                bail!("Backup abgebrochen");
-            }
-            log(if cfg.separate_snapshots { format!("Sichere {} …", group[0]) } else { "Sichere Daten …".into() });
-            let res = r.backup(
-                &BackupOptions {
-                    sources: group,
-                    excludes: &cfg.excludes,
-                    exclude_caches: cfg.exclude_caches,
-                    exclude_if_present: &cfg.exclude_if_present,
-                    exclude_larger_than: &cfg.exclude_larger_than,
-                    host: &host,
-                },
-                cancel,
-                &mut on_event,
-            );
-            match res {
-                Ok(o) => outcome.warnings |= o.warnings,
-                Err(e) if cancel.load(Ordering::Relaxed) => return Err(e),
-                Err(e) => {
-                    log(format!("Fehler bei {}: {e:#}", group.join(", ")));
-                    errors.push(format!("{}: {e:#}", group.join(", ")));
-                }
-            }
-        }
-        if errors.len() == groups.len() {
-            bail!("{}", errors.join("\n"));
-        }
-        if !errors.is_empty() {
-            outcome.warnings = true;
-            log(format!("Warnung: {} von {} Ordnern konnten nicht gesichert werden.", errors.len(), groups.len()));
-        }
-        if outcome.warnings {
-            log("Warnung: Einige Dateien waren nicht lesbar und wurden übersprungen.".into());
-        }
+        let outcome = backup_sources(&r, cfg, &host, cancel, &mut log, on_event)?;
         log("Räume alte Snapshots auf …".into());
         r.forget(cfg.keep_daily, cfg.keep_weekly, cfg.keep_monthly, &host)?;
         Ok(outcome)
@@ -125,4 +127,73 @@ pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn restic_available() -> bool {
+        std::process::Command::new("restic").arg("version").output().is_ok()
+    }
+
+    fn setup(d: &std::path::Path, names: &[&str]) -> (Restic, Config) {
+        let mut cfg = Config::default();
+        for n in names {
+            let p = d.join(n);
+            std::fs::create_dir(&p).unwrap();
+            std::fs::write(p.join("a.txt"), n).unwrap();
+            cfg.sources.push(p.to_string_lossy().into());
+        }
+        let r = Restic { bin: "restic".into(), repo: d.join("repo").to_string_lossy().into(), password: "pw".into() };
+        r.init().unwrap();
+        (r, cfg)
+    }
+
+    #[test]
+    fn separate_snapshots_one_per_folder() {
+        if !restic_available() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let (r, mut cfg) = setup(d.path(), &["admin", "xyz"]);
+        cfg.separate_snapshots = true;
+        backup_sources(&r, &cfg, "testhost", &AtomicBool::new(false), |_| {}, |_| {}).unwrap();
+        let snaps = r.snapshots().unwrap();
+        assert_eq!(snaps.len(), 2);
+        assert!(snaps.iter().all(|s| s.paths.len() == 1));
+        // Aufbewahrung gilt je Ordner: beide Snapshots bleiben erhalten
+        r.forget(1, 0, 0, "testhost").unwrap();
+        assert_eq!(r.snapshots().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn combined_snapshot_by_default() {
+        if !restic_available() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let (r, cfg) = setup(d.path(), &["admin", "xyz"]);
+        backup_sources(&r, &cfg, "testhost", &AtomicBool::new(false), |_| {}, |_| {}).unwrap();
+        let snaps = r.snapshots().unwrap();
+        assert_eq!(snaps.len(), 1);
+        assert_eq!(snaps[0].paths.len(), 2);
+    }
+
+    #[test]
+    fn partial_failure_is_warning_total_failure_is_error() {
+        if !restic_available() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let (r, mut cfg) = setup(d.path(), &["admin"]);
+        cfg.separate_snapshots = true;
+        cfg.sources.push(d.path().join("gibt-es-nicht").to_string_lossy().into());
+        let mut lines = vec![];
+        let o = backup_sources(&r, &cfg, "testhost", &AtomicBool::new(false), |m| lines.push(m), |_| {}).unwrap();
+        assert!(o.warnings);
+        assert_eq!(r.snapshots().unwrap().len(), 1);
+        cfg.sources.remove(0);
+        assert!(backup_sources(&r, &cfg, "testhost", &AtomicBool::new(false), |_| {}, |_| {}).is_err());
+    }
 }

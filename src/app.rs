@@ -560,7 +560,7 @@ impl App {
                 }
                 removable_list(ui, &mut self.cfg.sources);
                 ui.checkbox(&mut self.cfg.separate_snapshots, "Jeden Ordner als eigenen Snapshot sichern");
-                ui::hint(ui, "Z. B. getrennte Snapshots für C:\\Users\\admin und C:\\Users\\xyz; die Aufbewahrung gilt dann je Ordner.");
+                ui::hint(ui, "Z. B. getrennte Snapshots für C:\\Users\\admin und C:\\Users\\xyz; die Aufbewahrung gilt dann je Ordner. Bereits vorhandene gemeinsame Snapshots bleiben bestehen und müssen bei Bedarf manuell gelöscht werden.");
                 if ui.button("＋  Ordner hinzufügen …").clicked() {
                     if let Some(p) = rfd::FileDialog::new().pick_folder() {
                         let p = p.to_string_lossy().into_owned();
