@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.3.0]
+## [Unveröffentlicht]
 
 ### Neu
 - Autostart: Option „Programm beim Anmelden automatisch starten (minimiert)“ im Tab Zeitplan (Linux: `~/.config/autostart`, Windows: Run-Schlüssel).
@@ -8,6 +8,14 @@
 - Zeitplan-Läufe versuchen die NAS-Verbindung bis zu 5-mal (je 60 s Abstand), falls das Netzwerk direkt nach dem Start noch fehlt.
 - Backup-Tab zeigt das Alter des letzten Laufs und warnt ab 2 Tagen („Überfällig“).
 - Arch Linux: `packaging/arch/PKGBUILD` und `install.sh` zum Installieren und Aktualisieren als pacman-Paket.
+
+### Behoben
+- Zeitplan bei AppImage: Der Timer startet jetzt die AppImage-Datei (`$APPIMAGE`) statt eines temporären Mount-Pfads, der nach dem Beenden verschwindet.
+- GitHub-Workflows: Pull Requests wurden doppelt gebaut (Push + PR), Release-Commits und reine Doku-Änderungen lösen keinen unnötigen Build mehr; veraltete Läufe werden abgebrochen.
+
+## [0.3.0]
+
+### Neu
 - Zeitplan: mehrere Uhrzeiten pro Tag (Schnellauswahl 1×/2× täglich, alle 6/3 Stunden, stündlich) und Wochentage wählbar. Linux: mehrere `OnCalendar`-Einträge im systemd-Timer; Windows: ein Task je Uhrzeit. Ältere Einzel-Uhrzeit wird übernommen.
 - Lokaler Verlauf der letzten Läufe (`history.tsv` im Datenverzeichnis, max. 200 Einträge), im Backup-Tab sichtbar – auch für Läufe des Zeitplans.
 - Neue Oberfläche: dunkles Theme mit Akzentfarbe, Seitenleiste, Karten-Layout, farbige Statusmeldungen.
@@ -16,8 +24,6 @@
 - Einstellungen in Bereiche gegliedert, Speichern-Leiste bleibt unten sichtbar, Enter fügt Ausschlüsse hinzu.
 
 ### Behoben
-- Zeitplan bei AppImage: Der Timer startet jetzt die AppImage-Datei (`$APPIMAGE`) statt eines temporären Mount-Pfads, der nach dem Beenden verschwindet.
-- GitHub-Workflows: Pull Requests wurden doppelt gebaut (Push + PR), Release-Commits und reine Doku-Änderungen lösen keinen unnötigen Build mehr; veraltete Läufe werden abgebrochen.
 - Das Protokoll des letzten Laufs wird nicht mehr bei jedem Frame von der Platte gelesen.
 
 ## [0.2.1]
