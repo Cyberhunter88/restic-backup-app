@@ -1,7 +1,7 @@
 name: release
 
-# Manuell starten: Actions → release → "Run workflow" (Branch: master), Versionsnummer eingeben.
-# Ablauf: Version hochsetzen → Release-Branch bauen und testen → master vorspulen → Tag + GitHub-Release.
+# Manuell starten: Actions → release → "Run workflow" (Branch: main), Versionsnummer eingeben.
+# Ablauf: Version hochsetzen → Release-Branch bauen und testen → main vorspulen → Tag + GitHub-Release.
 
 on:
   workflow_dispatch:
@@ -23,7 +23,7 @@ jobs:
       version: ${{ steps.v.outputs.version }}
       branch: ${{ steps.v.outputs.branch }}
     steps:
-      - name: Nur von master aus
+      - name: Nur von main aus
         run: |
           if [ "$GITHUB_REF_NAME" != "${{ github.event.repository.default_branch }}" ]; then
             echo "Bitte den Workflow auf dem Branch ${{ github.event.repository.default_branch }} starten (aktuell: $GITHUB_REF_NAME)."; exit 1
@@ -84,9 +84,9 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.branch }}
           fetch-depth: 0
-          # Optional: Secret RELEASE_TOKEN (PAT), falls master später geschützt wird
+          # Optional: Secret RELEASE_TOKEN (PAT), falls main später geschützt wird
           token: ${{ secrets.RELEASE_TOKEN || github.token }}
-      - name: master vorspulen (nur wenn master seit dem Start unverändert ist)
+      - name: main vorspulen (nur wenn main seit dem Start unverändert ist)
         env:
           DEFAULT: ${{ github.event.repository.default_branch }}
         run: git push origin "HEAD:refs/heads/$DEFAULT"

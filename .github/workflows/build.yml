@@ -2,12 +2,12 @@ name: build
 
 # Ein Build pro Änderung:
 # - Feature-Branches bauen nur über ihren Pull Request (kein zusätzlicher Push-Build)
-# - master wird nach dem Merge einmal geprüft; Release-Commits ("Release v…") werden nicht
+# - main wird nach dem Merge einmal geprüft; Release-Commits ("Release v…") werden nicht
 #   noch einmal gebaut, da der Release-Workflow sie schon gebaut hat
 # - reine Doku-Änderungen lösen keinen Build aus
 on:
   push:
-    branches: [master]
+    branches: [main]
     tags: ["v*"]
     paths-ignore: ["**.md", ".githooks/**"]
   pull_request:
