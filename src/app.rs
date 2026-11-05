@@ -314,10 +314,9 @@ impl App {
         });
 
         if self.busy && !self.log.is_empty() {
-            ui::card(ui, Some("Läuft …"), |ui| {
-                if let Some(step) = self.log.iter().rev().find(|l| !l.starts_with("Snapshot")) {
-                    ui.label(RichText::new(step).color(MUTED));
-                }
+            // Aktueller Schritt als Titel; das Protokoll darunter zeigt ihn nicht doppelt
+            let title = self.log.iter().rev().find(|l| !l.starts_with("Snapshot")).cloned().unwrap_or_else(|| "Läuft …".into());
+            ui::card(ui, Some(&title), |ui| {
                 ui.horizontal(|ui| {
                     ui.add(egui::ProgressBar::new(self.progress).show_percentage().animate(true).desired_width(ui.available_width() - 110.0));
                     if ui.button("Abbrechen").clicked() {
@@ -327,10 +326,11 @@ impl App {
             });
         }
 
-        if !self.history.is_empty() {
-            ui::card(ui, Some("Verlauf"), |ui| {
+        // Der neueste Lauf steht schon oben unter „Letzter Lauf“
+        if self.history.len() > 1 {
+            ui::card(ui, Some("Frühere Läufe"), |ui| {
                 egui::Grid::new("history").num_columns(3).striped(true).spacing([16.0, 6.0]).show(ui, |ui| {
-                    for h in &self.history {
+                    for h in self.history.iter().skip(1) {
                         ui.label(RichText::new(&h.time).color(MUTED));
                         if h.ok { ui::badge(ui, "OK", OK) } else { ui::badge(ui, "Fehler", ERR) }
                         ui.label(&h.summary);

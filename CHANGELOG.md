@@ -7,6 +7,7 @@
 
 ### Behoben
 - Windows: Das Programmsymbol ist jetzt in der .exe eingebettet (vorher zeigten Explorer, Taskleiste und Verknüpfungen das Standard-Symbol).
+- Übersicht: Doppelte Anzeigen entfernt – der aktuelle Schritt steht nur noch als Titel der Laufkarte (nicht zusätzlich als Zeile), und „Verlauf“ („Frühere Läufe“) wiederholt nicht mehr den Lauf aus „Letzter Lauf“.
 
 ## [0.3.2]
 
