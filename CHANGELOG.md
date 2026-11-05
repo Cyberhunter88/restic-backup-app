@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unveröffentlicht]
+
+### Neu
+- Ausschlüsse: Das Eingabefeld nimmt jetzt mehrere Muster auf einmal an (ein Muster pro Zeile einfügen, Leerzeilen und `#`-Kommentare werden ignoriert, Doppelte übersprungen).
+- „Übliche Ausschlüsse“ deckt deutlich mehr ab: Temp-/Cache-Ordner, AppData (Temp, INetCache, Packages, Browser-Caches), `NTUSER.DAT*`, Windows-Systemdateien sowie Linux-Papierkorb und -Caches.
+
+### Behoben
+- Windows: Zeitplan aktivieren schlug bei mehreren Uhrzeiten fehl („New-ScheduledTaskTrigger … System.Object[]“); die Trigger werden jetzt korrekt geklammert.
+- Backup: Meldet restic nach geschriebenem Snapshot einen Fehlercode (z. B. „Zugriff verweigert“ bei gesperrten Ordnern unter Windows), gilt der Lauf als Warnung statt als Fehler.
+
 ## [0.3.1]
 
 ### Neu

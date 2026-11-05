@@ -269,6 +269,7 @@ impl Restic {
         });
         let child = Arc::new(Mutex::new(child));
         let done = Arc::new(AtomicBool::new(false));
+        let mut got_summary = false;
         let cancelled = Arc::new(AtomicBool::new(false));
         std::thread::scope(|sc| {
             // Wächter: beendet den restic-Prozess, sobald abgebrochen wird
@@ -284,6 +285,7 @@ impl Restic {
             });
             for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
                 if let Some(ev) = parse_backup_line(&line) {
+                    got_summary |= matches!(ev, BackupEvent::Summary { .. });
                     on_event(ev);
                 }
             }
@@ -297,6 +299,9 @@ impl Restic {
         match status.code() {
             Some(0) => Ok(BackupOutcome::default()),
             Some(3) => Ok(BackupOutcome { warnings: true }),
+            // Snapshot wurde geschrieben (Summary erhalten), aber restic meldet Lesefehler (z. B. "Zugriff verweigert"
+            // unter Windows) → Warnung statt Fehler
+            Some(_) if got_summary => Ok(BackupOutcome { warnings: true }),
             _ => bail!("restic backup fehlgeschlagen: {}", err.trim()),
         }
     }

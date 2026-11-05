@@ -58,10 +58,39 @@ impl Default for Config {
     }
 }
 
-/// Übliche Ausschlüsse als Vorlage für die GUI.
+/// Übliche Ausschlüsse als Vorlage für die GUI (Windows und Linux; Muster ohne Treffer sind harmlos).
 pub const COMMON_EXCLUDES: &[&str] = &[
-    "node_modules", "target", ".cache", "*.tmp", "Thumbs.db", "$RECYCLE.BIN", "pagefile.sys", "hiberfil.sys", "System Volume Information",
+    // Allgemein: Build-Artefakte, Caches, temporäre Dateien
+    "**/node_modules", "**/target", "**/__pycache__", "**/.pytest_cache", "**/.venv", "**/.gradle",
+    "**/.cache", "*.tmp", "*.temp", "*.part", "*.crdownload", "*.swp", "~$*",
+    // Windows: System- und Papierkorbdateien
+    "**/$RECYCLE.BIN", "**/System Volume Information", "**/pagefile.sys", "**/swapfile.sys", "**/hiberfil.sys",
+    "**/Thumbs.db", "**/desktop.ini", "**/NTUSER.DAT*", "**/UsrClass.dat*",
+    // Windows: AppData (Temp, Caches, Store-Apps, Browser-Caches)
+    "**/AppData/Local/Temp", "**/AppData/Local/Microsoft/Windows/INetCache", "**/AppData/Local/Microsoft/Windows/Explorer",
+    "**/AppData/Local/Microsoft/WindowsApps", "**/AppData/Local/Packages", "**/AppData/Local/CrashDumps",
+    "**/AppData/Local/D3DSCache", "**/AppData/Local/pip/cache", "**/AppData/Local/npm-cache",
+    "**/AppData/Local/Google/Chrome/User Data/*/Cache", "**/AppData/Local/Microsoft/Edge/User Data/*/Cache",
+    "**/AppData/Roaming/Code/Cache*", "**/AppData/Roaming/Code/CachedData",
+    // Linux: Caches, Papierkorb, Laufzeitdaten
+    "**/.local/share/Trash", "**/.local/share/Steam", "**/.thumbnails", "**/.npm/_cacache", "**/.cargo/registry",
+    "**/.config/*/Cache", "**/.config/*/Code Cache", "**/.config/*/GPUCache", "**/.mozilla/firefox/*/cache2",
+    "**/.var/app/*/cache", "**/snap/*/common/.cache",
 ];
+
+/// Zerlegt eingefügten Text (ein Muster pro Zeile) und hängt neue, nicht doppelte Muster an.
+/// Leerzeilen und Kommentarzeilen (`#`) werden übersprungen. Liefert die Anzahl hinzugefügter Muster.
+pub fn add_excludes(list: &mut Vec<String>, text: &str) -> usize {
+    let mut added = 0;
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') || list.iter().any(|e| e == line) {
+            continue;
+        }
+        list.push(line.to_string());
+        added += 1;
+    }
+    added
+}
 
 fn restic_works(p: &std::path::Path) -> bool {
     let mut c = std::process::Command::new(p);
@@ -207,6 +236,14 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn add_excludes_splits_lines_and_dedups() {
+        let mut l = vec!["*.tmp".to_string()];
+        let n = add_excludes(&mut l, "**/node_modules\r\n\n# Kommentar\n  *.tmp  \n**/AppData/Local/Temp\n");
+        assert_eq!(n, 2);
+        assert_eq!(l, ["*.tmp", "**/node_modules", "**/AppData/Local/Temp"]);
+    }
 
     #[test]
     fn roundtrip() {
