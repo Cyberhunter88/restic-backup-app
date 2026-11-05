@@ -19,6 +19,7 @@ enum Msg {
     Info(Result<String, String>),
     Restored(Result<String, String>),
     RepoInfo(Result<String, String>),
+    Overview(Result<job::RepoOverview, String>),
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -60,6 +61,10 @@ pub struct App {
     history: Vec<crate::config::HistoryEntry>,
     snapshots: Vec<Snapshot>,
     snaps_loaded: bool,
+    overview: Option<job::RepoOverview>,
+    overview_msg: String,
+    /// Nach einem Backup die Repository-Daten neu laden (braucht den egui-Kontext)
+    pending_overview: bool,
     snap_filter: String,
     snap_folder: Option<String>,
     snap_range: ui::SnapRange,
@@ -124,6 +129,9 @@ impl App {
             history: crate::config::read_history(8),
             snapshots: vec![],
             snaps_loaded: false,
+            overview: None,
+            overview_msg: String::new(),
+            pending_overview: false,
             snap_filter: String::new(),
             snap_folder: None,
             snap_range: ui::SnapRange::All,
@@ -167,6 +175,9 @@ impl App {
                     self.last_run = crate::config::read_last_run();
                     self.history = crate::config::read_history(8);
                     self.snaps_loaded = false;
+                    if self.overview.is_some() {
+                        self.pending_overview = true;
+                    }
                 }
                 Msg::Snaps(r) => {
                     self.busy = false;
@@ -189,6 +200,16 @@ impl App {
                 Msg::RepoInfo(r) => {
                     self.busy = false;
                     self.repo_msg = r.unwrap_or_else(|e| format!("FEHLER: {e}"));
+                }
+                Msg::Overview(r) => {
+                    self.busy = false;
+                    match r {
+                        Ok(o) => {
+                            self.overview = Some(o);
+                            self.overview_msg.clear();
+                        }
+                        Err(e) => self.overview_msg = format!("FEHLER: {e}"),
+                    }
                 }
                 Msg::Info(r) => {
                     self.busy = false;
@@ -234,6 +255,14 @@ impl App {
         self.spawn(ctx, move |tx| {
             let r = job::open(&cfg).and_then(|r| r.snapshots());
             let _ = tx.send(Msg::Snaps(r.map_err(|e| format!("{e:#}"))));
+        });
+    }
+
+    fn load_overview(&mut self, ctx: &egui::Context) {
+        let cfg = self.cfg.clone();
+        self.overview_msg = "Lade Repository-Daten …".into();
+        self.spawn(ctx, move |tx| {
+            let _ = tx.send(Msg::Overview(job::repo_overview(&cfg).map_err(|e| format!("{e:#}"))));
         });
     }
 
@@ -316,6 +345,27 @@ impl App {
                 });
             }
         });
+
+        if self.cfg.is_ready() {
+            ui::card(ui, Some("Repository"), |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    match &self.overview {
+                        Some(o) => {
+                            ui.label(format!("Größe: {}", ui::human_bytes(o.size)));
+                            ui.label(format!("Snapshots: {}", o.snapshots));
+                            if let Some(f) = o.free {
+                                ui.label(format!("Frei auf dem NAS: {}", ui::human_bytes(f)));
+                            }
+                        }
+                        None => ui::hint(ui, "Noch nicht geladen (verbindet kurz mit dem NAS)."),
+                    }
+                    if ui.add_enabled(!self.busy, egui::Button::new(if self.overview.is_some() { "⟳ Aktualisieren" } else { "Laden" })).clicked() {
+                        self.load_overview(&ctx);
+                    }
+                });
+                ui::status(ui, &self.overview_msg);
+            });
+        }
 
         if self.busy && !self.log.is_empty() {
             // Aktueller Schritt als Titel; das Protokoll darunter zeigt ihn nicht doppelt
@@ -850,6 +900,10 @@ impl Drop for App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll();
+        if self.pending_overview && !self.busy {
+            self.pending_overview = false;
+            self.load_overview(&ui.ctx().clone());
+        }
         self.sidebar(ui);
         egui::CentralPanel::default().frame(Frame::new().fill(ui::BG).inner_margin(Margin::same(22))).show(ui, |ui| match self.tab {
             Tab::Backup => self.backup_tab(ui),

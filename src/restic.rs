@@ -109,6 +109,20 @@ pub fn parse_backup_line(line: &str) -> Option<BackupEvent> {
     }
 }
 
+/// Größe des Repos (`restic stats --mode raw-data`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepoStats {
+    pub size: u64,
+}
+
+pub fn parse_stats(output: &str) -> Option<RepoStats> {
+    #[derive(Deserialize)]
+    struct Raw {
+        total_size: u64,
+    }
+    Some(RepoStats { size: serde_json::from_str::<Raw>(output.trim()).ok()?.total_size })
+}
+
 pub fn parse_ls(output: &str) -> Vec<Node> {
     output
         .lines()
@@ -246,6 +260,11 @@ impl Restic {
         self.run(&forget_args(daily, weekly, monthly, host)).map(|_| ())
     }
 
+    pub fn stats(&self) -> Result<RepoStats> {
+        let out = self.run(&Self::s(&["stats", "--json", "--mode", "raw-data"]))?;
+        parse_stats(&out).context("Unerwartete Ausgabe von restic stats")
+    }
+
     pub fn check(&self) -> Result<()> {
         self.run(&Self::s(&["check"])).map(|_| ())
     }
@@ -326,6 +345,12 @@ mod tests {
         let n = parse_ls(o);
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].size, 3);
+    }
+
+    #[test]
+    fn stats_parsed() {
+        assert_eq!(parse_stats("{\"total_size\":2048,\"total_blob_count\":3}\n"), Some(RepoStats { size: 2048 }));
+        assert_eq!(parse_stats("kaputt"), None);
     }
 
     #[test]

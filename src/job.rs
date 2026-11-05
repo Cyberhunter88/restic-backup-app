@@ -56,6 +56,20 @@ pub fn describe_repo(cfg: &Config) -> Result<String> {
     })
 }
 
+/// Kennzahlen des Repos für die Übersicht.
+#[derive(Debug, Clone)]
+pub struct RepoOverview {
+    pub size: u64,
+    pub snapshots: usize,
+    pub free: Option<u64>,
+}
+
+pub fn repo_overview(cfg: &Config) -> Result<RepoOverview> {
+    let r = open(cfg)?;
+    let stats = r.stats()?;
+    Ok(RepoOverview { size: stats.size, snapshots: r.snapshots()?.len(), free: smb::free_space(&r.repo) })
+}
+
 /// Sichert die Quellordner: entweder alle in einem Snapshot oder (`separate_snapshots`) je Ordner einen.
 /// Schlägt nur ein Teil der Ordner fehl, gilt der Lauf als Warnung; schlagen alle fehl, ist es ein Fehler.
 fn backup_sources(r: &Restic, cfg: &Config, host: &str, cancel: &AtomicBool, mut log: impl FnMut(String), mut on_event: impl FnMut(BackupEvent)) -> Result<BackupOutcome> {

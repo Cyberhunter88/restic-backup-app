@@ -21,6 +21,27 @@ pub fn repo_path(cfg: &Config) -> Result<String> {
     }
 }
 
+/// Freier Platz (Bytes) auf dem Datenträger des Repo-Pfads; unter Windows (UNC) nicht ermittelbar.
+pub fn free_space(path: &str) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        let out = std::process::Command::new("df").args(["-Pk", path]).output().ok()?;
+        parse_df(&String::from_utf8_lossy(&out.stdout))
+    }
+    #[cfg(windows)]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// Liest „verfügbar“ (1K-Blöcke) aus der `df -Pk`-Ausgabe.
+#[cfg_attr(windows, allow(dead_code))]
+pub fn parse_df(output: &str) -> Option<u64> {
+    let line = output.lines().nth(1)?;
+    line.split_whitespace().nth(3)?.parse::<u64>().ok().map(|k| k * 1024)
+}
+
 #[cfg(unix)]
 pub use linux::{fstab_line, mount, unmount, write_credentials};
 #[cfg(windows)]
@@ -195,5 +216,17 @@ mod windows {
     pub fn unmount(cfg: &Config) -> Result<()> {
         let unc = format!(r"\\{}\{}", cfg.host, cfg.share);
         net(&["use", &unc, "/delete", "/y"]).map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn df_parsed() {
+        let o = "Filesystem 1024-blocks Used Available Capacity Mounted on\n//nas/share 1000 400 600 40% /mnt\n";
+        assert_eq!(parse_df(o), Some(600 * 1024));
+        assert_eq!(parse_df("leer"), None);
     }
 }
