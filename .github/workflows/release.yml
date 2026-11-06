@@ -1,104 +1,167 @@
 name: release
 
-# Manuell starten: Actions → release → "Run workflow" (Branch: main), Versionsnummer eingeben.
-# Ablauf: Version und Changelog auf einem Release-Branch anpassen → Release-PR öffnen und bauen.
-# Nach dem Mergen des PR (main ist geschützt) baut build.yml main und legt Tag + GitHub-Release an.
-
+# Manuell starten: Actions → release → "Run workflow" (Branch: main), Version eingeben (z. B. 0.3.9).
+# Wie beim cctv-viewer: Die Version steht schon im getesteten Commit (im PR erhöht, siehe README).
+# Der Workflow ändert nichts an main und legt keinen PR an. Er prüft Version, Changelog und die
+# erfolgreiche Build-Prüfung genau dieses Commits, nimmt die dort gebauten Pakete (kein Neubau),
+# legt ein Release als Entwurf an, hängt die Dateien an und veröffentlicht erst danach.
+# Wiederholung mit derselben Version und demselben Commit ist unschädlich.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Neue Version ohne v, z. B. 0.3.1"
+        description: "Version ohne v, z. B. 0.3.9 (muss schon in Cargo.toml und CHANGELOG des Commits stehen)"
         required: true
+        type: string
+      commit:
+        description: "Optional: vollständiger SHA eines main-Commits (leer = aktueller Stand von main)"
+        required: false
         type: string
 
 permissions:
-  contents: write
-  pull-requests: write
-  actions: write
+  contents: read
 
-concurrency: release
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   prepare:
+    name: Version und Build prüfen
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
     outputs:
-      version: ${{ steps.v.outputs.version }}
-      branch: ${{ steps.v.outputs.branch }}
+      version: ${{ steps.check.outputs.version }}
+      commit: ${{ steps.check.outputs.commit }}
+      run_id: ${{ steps.check.outputs.run_id }}
+      already: ${{ steps.check.outputs.already }}
     steps:
-      - name: Nur von main aus
+      - name: Nur manuell auf main ausführen
         run: |
-          if [ "$GITHUB_REF_NAME" != "${{ github.event.repository.default_branch }}" ]; then
-            echo "Bitte den Workflow auf dem Branch ${{ github.event.repository.default_branch }} starten (aktuell: $GITHUB_REF_NAME)."; exit 1
+          if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "Release nur über „Run workflow“ mit Branch main starten."; exit 1
           fi
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Version prüfen
-        id: v
-        env:
-          VERSION: ${{ inputs.version }}
-        run: |
-          VERSION="${VERSION#v}"
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "Ungültige Version '$VERSION' (erwartet X.Y.Z)"; exit 1; fi
-          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then echo "Tag v$VERSION existiert bereits"; exit 1; fi
-          OLD=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
-          if [ "$(printf '%s\n%s\n' "$OLD" "$VERSION" | sort -V | tail -1)" != "$VERSION" ] || [ "$OLD" = "$VERSION" ]; then echo "Version $VERSION muss größer sein als die aktuelle $OLD"; exit 1; fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "branch=release/v$VERSION" >> "$GITHUB_OUTPUT"
-      - name: Version und Changelog anpassen
-        env:
-          VERSION: ${{ steps.v.outputs.version }}
-        run: |
-          sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" Cargo.toml
-          cargo update --workspace
-          python3 - <<'PY'
-          import os
-          v = os.environ["VERSION"]
-          s = open("CHANGELOG.md", encoding="utf-8").read()
-          if "## [Unveröffentlicht]" in s:
-              s = s.replace("## [Unveröffentlicht]", f"## [{v}]", 1)
-          else:
-              s = s.replace("# Changelog\n", f"# Changelog\n\n## [{v}]\n\n- Release {v}\n", 1)
-          open("CHANGELOG.md", "w", encoding="utf-8").write(s)
-          PY
-          git diff --stat
-      - name: Release-Branch pushen
-        env:
-          VERSION: ${{ steps.v.outputs.version }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "Release v$VERSION"
-          git push origin "HEAD:refs/heads/release/v$VERSION"
-
-  pull-request:
-    needs: prepare
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Release-PR öffnen und Build starten
+      - id: check
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.prepare.outputs.version }}
-          BRANCH: ${{ needs.prepare.outputs.branch }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+          REQUESTED_COMMIT: ${{ inputs.commit }}
         run: |
-          # Der Build läuft auf dem Release-Branch, damit der PR die Pflichtprüfung „Anwendung prüfen“ bekommt
-          # (PRs, die mit dem Workflow-Token angelegt werden, starten selbst keine Workflows)
-          gh workflow run build.yml --ref "$BRANCH"
-          LINK="https://github.com/${{ github.repository }}/compare/main...$BRANCH?expand=1"
-          if gh pr create --base main --head "$BRANCH" --title "Release v$VERSION" \
-            --body "Setzt Version und Changelog auf $VERSION. Nach dem Mergen baut der main-Build und veröffentlicht v$VERSION automatisch."; then
-            echo "Release-PR für v$VERSION geöffnet." >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          fail() { echo "::error::$1"; echo "## Release abgebrochen: $1 Es wurde nichts veröffentlicht." >> "$GITHUB_STEP_SUMMARY"; exit 1; }
+
+          VERSION="${REQUESTED_VERSION//[[:space:]]/}"; VERSION="${VERSION#v}"
+          [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "Ungültige Version „$VERSION“ (erwartet X.Y.Z)."
+
+          COMMIT="${REQUESTED_COMMIT//[[:space:]]/}"
+          if [ -z "$COMMIT" ]; then
+            COMMIT=$(git rev-parse origin/main)
           else
-            # Meist ist „Allow GitHub Actions to create and approve pull requests“ abgeschaltet
-            # (Settings → Actions → General). Der Branch und der Build sind trotzdem fertig.
-            echo "::warning::Release-PR konnte nicht automatisch angelegt werden. Bitte von Hand öffnen: $LINK"
-            {
-              echo "### Release-PR bitte von Hand öffnen"
-              echo "[$LINK]($LINK)"
-              echo
-              echo "Dauerhaft automatisch: Settings → Actions → General → „Allow GitHub Actions to create and approve pull requests“ aktivieren."
-            } >> "$GITHUB_STEP_SUMMARY"
+            [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "Commit muss ein vollständiger 40-stelliger SHA sein."
+            git cat-file -e "$COMMIT^{commit}" 2>/dev/null || fail "Commit $COMMIT existiert nicht."
+            git merge-base --is-ancestor "$COMMIT" origin/main || fail "Commit $COMMIT gehört nicht zu main."
           fi
+
+          # Die Version muss Teil des getesteten Commits sein (wird nie vom Workflow geändert)
+          CARGO=$(git show "$COMMIT:Cargo.toml" | grep -m1 '^version' | sed 's/.*"\(.*\)"/\1/')
+          LOCK=$(git show "$COMMIT:Cargo.lock" | awk '/^name = "restic-backup-app"$/ {getline; gsub(/version = |"/, ""); print; exit}')
+          [ "$CARGO" = "$VERSION" ] || fail "Cargo.toml hat Version $CARGO, gewünscht ist $VERSION. Version zuerst im PR erhöhen."
+          [ "$LOCK" = "$VERSION" ] || fail "Cargo.lock hat Version $LOCK, gewünscht ist $VERSION (cargo update --workspace im PR)."
+          git show "$COMMIT:CHANGELOG.md" | grep -Fxq "## [$VERSION]" || fail "CHANGELOG.md hat keinen Abschnitt „## [$VERSION]“ (Unveröffentlicht im PR umbenennen)."
+
+          # Schon veröffentlicht? Gleiche Version + gleicher Commit = nichts zu tun, anderer Commit = Fehler
+          TAG_COMMIT=$(git rev-parse -q --verify "refs/tags/v$VERSION^{commit}" || true)
+          ALREADY=false
+          if [ -n "$TAG_COMMIT" ]; then
+            [ "$TAG_COMMIT" = "$COMMIT" ] || fail "Tag v$VERSION zeigt auf $TAG_COMMIT, nicht auf $COMMIT."
+            DRAFT=$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo missing)
+            if [ "$DRAFT" = false ]; then ALREADY=true; fi
+          fi
+
+          # Erfolgreiche Build-Prüfung für genau diesen Commit auf main (Push oder manueller Lauf)
+          RUN_ID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml --commit "$COMMIT" --branch main --status success \
+            --json databaseId,event --limit 30 --jq '[.[] | select(.event == "push" or .event == "workflow_dispatch")][0].databaseId // empty')
+          if [ -z "$RUN_ID" ] && [ "$ALREADY" != true ]; then
+            fail "Für $COMMIT gibt es keinen erfolgreichen Build auf main (reine Doku-Änderungen lösen keinen aus: dann Actions → build → Run workflow auf main starten)."
+          fi
+
+          {
+            echo "version=$VERSION"
+            echo "commit=$COMMIT"
+            echo "run_id=$RUN_ID"
+            echo "already=$ALREADY"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$ALREADY" = true ]; then
+            echo "## v$VERSION ist für $COMMIT schon veröffentlicht – nichts zu tun." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Prüfung bestanden: v$VERSION, Commit $COMMIT, Build-Lauf $RUN_ID" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  publish:
+    name: Release veröffentlichen
+    needs: prepare
+    if: needs.prepare.outputs.already != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      COMMIT: ${{ needs.prepare.outputs.commit }}
+      RUN_ID: ${{ needs.prepare.outputs.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+      - name: Gebaute Pakete aus dem geprüften Build holen
+        run: |
+          set -euo pipefail
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --pattern 'restic-backup-app-*' --dir "$RUNNER_TEMP/dl"
+          mkdir dist
+          find "$RUNNER_TEMP/dl" -type f -exec cp {} dist/ \;
+          for f in "restic-backup-app-$VERSION-x86_64.AppImage" "restic-backup-app-setup-$VERSION.exe" \
+                   "restic-backup-app_$VERSION-1_amd64.deb" "restic-backup-app-windows-x86_64.exe"; do
+            [ -s "dist/$f" ] || { echo "::error::Paket $f fehlt im Build $RUN_ID (anderer Versionsstand?)."; exit 1; }
+          done
+          (cd dist && sha256sum -- * > SHA256SUMS.txt)
+          ls -l dist
+      - name: Release-Text aus dem Changelog
+        run: |
+          git show "$COMMIT:CHANGELOG.md" | awk -v h="## [$VERSION]" '$0 == h {on=1; next} /^## \[/ {on=0} on' | sed '/./,$!d' > "$RUNNER_TEMP/notes.md"
+          if [ ! -s "$RUNNER_TEMP/notes.md" ]; then echo "Release $VERSION" > "$RUNNER_TEMP/notes.md"; fi
+          cat "$RUNNER_TEMP/notes.md"
+      - name: Entwurf anlegen, Dateien anhängen, prüfen
+        run: |
+          set -euo pipefail
+          TAG="v$VERSION"
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --target "$COMMIT" --title "$TAG" \
+              --notes-file "$RUNNER_TEMP/notes.md" --latest=false
+          fi
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" dist/* --clobber
+          n=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length')
+          [ "$n" -eq "$(ls dist | wc -l)" ] || { echo "::error::Es sind $n statt $(ls dist | wc -l) Dateien am Release."; exit 1; }
+      - name: Veröffentlichen
+        run: |
+          set -euo pipefail
+          TAG="v$VERSION"
+          # „Neueste“ wird nur verschoben, wenn diese Version die höchste veröffentlichte ist
+          highest=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isDraft,isPrerelease \
+            --jq '.[] | select(.isDraft == false and .isPrerelease == false) | .tagName' | sed 's/^v//' | sort -V | tail -1)
+          if [ -z "$highest" ] || [ "$(printf '%s\n%s\n' "$highest" "$VERSION" | sort -V | tail -1)" = "$VERSION" ]; then latest=true; else latest=false; fi
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$latest"
+          echo "## Veröffentlicht: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"

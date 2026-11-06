@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unveröffentlicht]
+
+### Geändert
+- Release-Ablauf wie beim cctv-viewer: Die Version wird im Pull Request erhöht; der manuell gestartete Workflow `release` prüft Version, Changelog und den Build des Commits, veröffentlicht die dort gebauten Pakete unverändert (mit `SHA256SUMS.txt`) und ändert nichts an `main`. `build.yml` veröffentlicht nicht mehr selbst.
+
 ## [0.3.8]
 
 ### Neu
