@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unveröffentlicht]
+## [0.3.8]
 
 ### Neu
 - Zeitplan für Laptops: Der Zeitplan startet das Programm jetzt zu den Uhrzeiten, bei der Anmeldung, beim Entsperren und alle 30 Minuten (Linux: Timer beim Start der Sitzung und alle 30 Minuten auf der Echtzeituhr, auch nach dem Aufwachen). Gesichert wird nur, wenn seit dem letzten geplanten Termin noch kein Backup gelang – kein doppeltes Sichern mehr nach langer Pause oder kurz nach einem manuellen Lauf.
