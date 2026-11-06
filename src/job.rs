@@ -8,6 +8,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Gesetzt, wenn die App die Freigabe selbst eingebunden hat (nur dann wird sie auch wieder getrennt).
 static MOUNTED_BY_APP: AtomicBool = AtomicBool::new(false);
 
+/// Es läuft schon ein Backup (GUI oder Zeitplan); ein zweites würde das Repository sperren.
+#[derive(Debug)]
+pub struct AlreadyRunning;
+
+impl std::fmt::Display for AlreadyRunning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Es läuft bereits ein Backup.")
+    }
+}
+
+impl std::error::Error for AlreadyRunning {}
+
 /// Mountet die Freigabe und liefert einen Restic-Wrapper für das Repo.
 pub fn open(cfg: &Config) -> Result<Restic> {
     let smb_pw = secrets::get(Secret::Smb)?.context("Kein SMB-Passwort gespeichert")?;
@@ -115,9 +127,10 @@ fn backup_sources(r: &Restic, cfg: &Config, host: &str, cancel: &AtomicBool, mut
 /// Mount → (init) → Backup → Aufräumen → Unmount.
 pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log: impl FnMut(String), on_event: impl FnMut(BackupEvent)) -> Result<BackupOutcome> {
     cfg.validate()?;
+    let _lock = crate::config::RunLock::acquire()?.ok_or(AlreadyRunning)?;
     log("Verbinde mit NAS …".into());
-    // Zeitplan-Lauf (headless): bis zu 5 Versuche à 60 s, GUI-Lauf: sofort melden
-    let r = if keep_mounted { open(cfg)? } else { open_with_retry(cfg, 5, std::time::Duration::from_secs(60), &mut log)? };
+    // Zeitplan-Lauf (headless): 2 Versuche à 30 s (die Erreichbarkeit wurde vorher geprüft), GUI-Lauf: sofort melden
+    let r = if keep_mounted { open(cfg)? } else { open_with_retry(cfg, 2, std::time::Duration::from_secs(30), &mut log)? };
     let host = local_hostname();
     let result = (|| {
         match r.probe() {

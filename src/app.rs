@@ -21,6 +21,8 @@ enum Msg {
     RepoInfo(Result<String, String>),
     Overview(Result<job::RepoOverview, String>),
     Diff(Result<Vec<DiffEntry>, String>),
+    /// Ergebnis der Update-Suche: `(Version falls neuer, manuell angestoßen)`
+    Update(Result<Option<String>, String>, bool),
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -65,6 +67,11 @@ pub struct App {
     overview: Option<job::RepoOverview>,
     overview_msg: String,
     last_check: Option<crate::config::LastCheck>,
+    /// Zeitplan pausiert bis (einmal geladen statt bei jedem Frame von der Platte)
+    pause_until: Option<chrono::NaiveDateTime>,
+    /// Neuere Version auf GitHub (Tag ohne `v`)
+    new_version: Option<String>,
+    update_msg: String,
     compare_with: Option<String>,
     diff: Option<Vec<DiffEntry>>,
     diff_msg: String,
@@ -117,7 +124,7 @@ impl App {
     pub fn new(ctx: &egui::Context) -> Self {
         let (tx, rx) = channel();
         let cfg = Config::load().unwrap_or_default();
-        Self {
+        let mut app = Self {
             cfg,
             tab: Tab::Backup,
             smb_pw: String::new(),
@@ -139,6 +146,9 @@ impl App {
             overview: None,
             overview_msg: String::new(),
             last_check: crate::config::read_last_check(),
+            pause_until: crate::config::read_pause(),
+            new_version: None,
+            update_msg: String::new(),
             compare_with: None,
             diff: None,
             diff_msg: String::new(),
@@ -155,7 +165,13 @@ impl App {
             restored_to: None,
             status: String::new(),
             cancel: Arc::new(AtomicBool::new(false)),
+        };
+        // Höchstens einmal täglich nach einer neuen Version suchen
+        let due = crate::config::read_update_check().is_none_or(|t| chrono::Local::now().naive_local().signed_duration_since(t).num_hours() >= 24);
+        if app.cfg.check_updates && due {
+            app.check_update(ctx, false);
         }
+        app
     }
 
     pub fn has_tray(&self) -> bool {
@@ -176,6 +192,8 @@ impl App {
                 }
                 TrayCmd::Backup if !self.busy && self.cfg.is_ready() => self.start_backup(ctx),
                 TrayCmd::Backup => {}
+                TrayCmd::Pause => self.set_pause(Some(ui::tomorrow_morning(chrono::Local::now().naive_local()))),
+                TrayCmd::Resume => self.set_pause(None),
                 TrayCmd::Quit => {
                     self.quitting = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -186,6 +204,32 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
+    }
+
+    /// Pause des Zeitplans setzen (`None` = fortsetzen) und anzeigen.
+    fn set_pause(&mut self, until: Option<chrono::NaiveDateTime>) {
+        crate::config::write_pause(until);
+        self.pause_until = until;
+    }
+
+    /// Aktive Pause (abgelaufene wird ignoriert).
+    fn active_pause(&self) -> Option<chrono::NaiveDateTime> {
+        self.pause_until.filter(|u| crate::config::pause_active(Some(*u), chrono::Local::now().naive_local()))
+    }
+
+    /// Sucht im Hintergrund nach einer neuen Version (ohne `busy` zu setzen).
+    fn check_update(&mut self, ctx: &egui::Context, manual: bool) {
+        if manual {
+            self.update_msg = "Suche …".into();
+        }
+        crate::config::write_update_check();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let r = update::check_latest().map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Msg::Update(r, manual));
+            ctx.request_repaint();
+        });
     }
 
     fn spawn(&mut self, ctx: &egui::Context, f: impl FnOnce(Sender<Msg>) + Send + 'static) {
@@ -271,6 +315,20 @@ impl App {
                     self.busy = false;
                     self.last_check = crate::config::read_last_check();
                     self.status = r.unwrap_or_else(|e| format!("FEHLER: {e}"));
+                }
+                Msg::Update(r, manual) => {
+                    match r {
+                        Ok(Some(v)) => {
+                            self.update_msg = format!("Version {v} ist verfügbar.");
+                            self.new_version = Some(v);
+                        }
+                        Ok(None) => {
+                            self.new_version = None;
+                            self.update_msg = "Du hast die neueste Version.".into();
+                        }
+                        Err(e) if manual => self.update_msg = format!("FEHLER: Update-Suche fehlgeschlagen: {e}"),
+                        Err(_) => {}
+                    }
                 }
                 Msg::Restored(r) => {
                     self.busy = false;
@@ -375,6 +433,12 @@ impl App {
                             });
                         }
                         None => ui::badge(ui, "Noch kein Backup", MUTED),
+                    }
+                    if let Some(until) = self.active_pause() {
+                        ui::badge(ui, &format!("Zeitplan pausiert bis {}", until.format("%d.%m. %H:%M")), WARN);
+                    }
+                    if let Some(v) = &self.new_version {
+                        ui::badge(ui, &format!("Neue Version {v} verfügbar (Info-Tab)"), ACCENT);
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -852,10 +916,18 @@ impl App {
         ui.add_space(4.0);
         ui::card(ui, Some("restic Backup"), |ui| {
             ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-            if ui.add(ui::primary("Neue Versionen ansehen")).clicked() {
-                update::open_url(update::RELEASES_URL);
-            }
-            ui::hint_long(ui, "hint_update", "Neue Versionen stehen auf GitHub (Anmeldung im Browser nötig).", "Update: neues Setup (Windows) bzw. .deb/AppImage (Linux) installieren – Einstellungen und Passwörter bleiben erhalten.");
+            ui.horizontal(|ui| {
+                if ui.button("Nach Updates suchen").clicked() {
+                    let ctx = ui.ctx().clone();
+                    self.check_update(&ctx, true);
+                }
+                if ui.add(ui::primary("Neue Versionen ansehen")).clicked() {
+                    update::open_url(update::RELEASES_URL);
+                }
+            });
+            ui::status(ui, &self.update_msg);
+            ui.checkbox(&mut self.cfg.check_updates, "Beim Start täglich nach einer neuen Version suchen");
+            ui::hint_long(ui, "hint_update", "Die Suche fragt nur die öffentliche GitHub-Release-Seite ab und sendet keine Daten.", "Update: neues Setup (Windows) bzw. .deb/AppImage (Linux) installieren – Einstellungen und Passwörter bleiben erhalten. Danach den Zeitplan einmal neu aktivieren. Die Option wird mit „Speichern“ (Einstellungen) übernommen.");
         });
         ui::card(ui, Some("Konfiguration"), |ui| {
             ui::hint(ui, "Einstellungen als Datei sichern oder auf einen anderen Rechner übernehmen. Passwörter sind nicht enthalten.");
@@ -955,7 +1027,7 @@ impl App {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     if ui.add(ui::primary("Zeitplan aktivieren")).clicked() {
-                        self.status = match self.cfg.validate().and_then(|_| self.cfg.save()).and_then(|_| schedule::install(&self.cfg.schedule_times, &self.cfg.schedule_days)) {
+                        self.status = match self.cfg.validate().and_then(|_| self.cfg.save()).and_then(|_| schedule::install(&self.cfg.schedule_times, &self.cfg.schedule_days, schedule::Options { only_on_ac: self.cfg.only_on_ac })) {
                             Ok(()) => format!("Zeitplan aktiv: {}.", self.schedule_summary()),
                             Err(e) => format!("FEHLER: {e:#}"),
                         };
@@ -972,10 +1044,40 @@ impl App {
                     ui,
                     "hint_catchup",
                     "Änderungen gelten erst nach „Zeitplan aktivieren“. Verpasste Läufe werden nachgeholt.",
-                    "War der PC zur geplanten Zeit aus, wird das Backup beim nächsten Anmelden bzw. Start nachgeholt (einmal, auch nach mehreren Tagen). Ist das NAS dann noch nicht erreichbar, versucht der Lauf es bis zu 5 Minuten lang erneut.",
+                    "Der Zeitplan startet das Programm zu den Uhrzeiten, bei der Anmeldung, beim Entsperren und alle 30 Minuten; gesichert wird nur, wenn seit dem letzten geplanten Termin noch kein Backup gelang. War der Laptop aus, wird also einmal nachgeholt (auch nach Tagen). Ist das NAS nicht erreichbar (z. B. unterwegs), wird der Lauf still übersprungen und später erneut versucht – ohne Fehler im Protokoll. Nach einer Programm-Aktualisierung den Zeitplan einmal neu aktivieren.",
                 );
                 #[cfg(windows)]
                 ui::hint(ui, "Der Taskplaner-Task läuft unter deinem Benutzer und nutzt die Freigabe direkt per UNC-Pfad.");
+            });
+            ui::card(ui, Some("Laptop und Pause"), |ui| {
+                ui.checkbox(&mut self.cfg.only_on_ac, "Nur am Netzteil sichern");
+                ui.horizontal(|ui| {
+                    ui.label("Warnen nach");
+                    ui.add(egui::DragValue::new(&mut self.cfg.warn_after_days).range(0..=60).suffix(" Tagen"));
+                    ui.label("ohne Backup (0 = aus)");
+                });
+                ui::hint(ui, "Gilt nach „Zeitplan aktivieren“ bzw. „Speichern“. Die Warnung erscheint als Desktop-Meldung, höchstens einmal täglich.");
+                ui.separator();
+                match self.active_pause() {
+                    Some(until) => {
+                        ui.label(RichText::new(format!("Zeitplan pausiert bis {}", until.format("%d.%m.%Y %H:%M"))).color(WARN));
+                    }
+                    None => {
+                        ui.label("Der Zeitplan ist aktiv.");
+                    }
+                }
+                ui.horizontal(|ui| {
+                    let now = chrono::Local::now().naive_local();
+                    if ui.button("Bis morgen früh pausieren").clicked() {
+                        self.set_pause(Some(ui::tomorrow_morning(now)));
+                    }
+                    if ui.button("1 Woche pausieren").clicked() {
+                        self.set_pause(Some(now + chrono::Duration::days(7)));
+                    }
+                    if ui.add_enabled(self.active_pause().is_some(), egui::Button::new("Fortsetzen")).clicked() {
+                        self.set_pause(None);
+                    }
+                });
             });
             ui::card(ui, Some("Autostart"), |ui| {
                 if ui.checkbox(&mut self.autostart, "Programm beim Anmelden automatisch starten (minimiert)").changed() {

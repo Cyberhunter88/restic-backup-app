@@ -187,6 +187,11 @@ pub fn age_text(head: &str, now: chrono::NaiveDateTime) -> Option<(String, bool)
     Some((text, d.num_hours() >= 48))
 }
 
+/// Morgen früh um 6 Uhr (Ende der Kurz-Pause).
+pub fn tomorrow_morning(now: chrono::NaiveDateTime) -> chrono::NaiveDateTime {
+    (now.date() + chrono::Duration::days(1)).and_hms_opt(6, 0, 0).unwrap_or(now)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +238,12 @@ mod tests {
         assert!(!snapshot_matches(&neu, "xyz", None, SnapRange::All, now));
         // kombiniert: Ordner passt, Text nicht
         assert!(!snapshot_matches(&neu, "xyz", Some("/a"), SnapRange::All, now));
+    }
+
+    #[test]
+    fn pause_bis_morgen() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap().and_hms_opt(22, 30, 0).unwrap();
+        assert_eq!(tomorrow_morning(now), chrono::NaiveDate::from_ymd_opt(2026, 11, 6).unwrap().and_hms_opt(6, 0, 0).unwrap());
     }
 
     #[test]

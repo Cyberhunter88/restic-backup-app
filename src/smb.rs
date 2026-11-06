@@ -21,6 +21,13 @@ pub fn repo_path(cfg: &Config) -> Result<String> {
     }
 }
 
+/// Antwortet das NAS auf dem SMB-Port (445)? Kurzer Test, bevor ein Zeitplan-Lauf Zeit verbraucht.
+pub fn host_reachable(host: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    let Ok(addrs) = (host.trim(), 445).to_socket_addrs() else { return false };
+    addrs.into_iter().any(|a| std::net::TcpStream::connect_timeout(&a, std::time::Duration::from_secs(3)).is_ok())
+}
+
 /// Freier Platz (Bytes) auf dem Datenträger des Repo-Pfads; unter Windows (UNC) nicht ermittelbar.
 pub fn free_space(path: &str) -> Option<u64> {
     #[cfg(unix)]

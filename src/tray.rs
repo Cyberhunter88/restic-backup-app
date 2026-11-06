@@ -1,4 +1,4 @@
-//! Tray-Icon: Fenster schließen = in den Tray, Menü „Öffnen“, „Backup jetzt“, „Beenden“.
+//! Tray-Icon: Fenster schließen = in den Tray, Menü „Öffnen“, „Backup jetzt“, Zeitplan pausieren/fortsetzen, „Beenden“.
 //! Ist kein Tray verfügbar (z. B. GNOME ohne AppIndicator), liefert `start` `None` und die App
 //! verhält sich wie ohne Tray.
 use eframe::egui;
@@ -10,6 +10,8 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 pub enum TrayCmd {
     Open,
     Backup,
+    Pause,
+    Resume,
     Quit,
 }
 
@@ -25,16 +27,20 @@ fn icon() -> Option<Icon> {
     Icon::from_rgba(d.rgba, d.width, d.height).ok()
 }
 
-/// Baut Icon und Menü; liefert zusätzlich die Menü-IDs (Öffnen, Backup, Beenden).
-fn build() -> Option<(TrayIcon, [MenuId; 3])> {
-    let (open, backup, quit) = (MenuItem::new("Öffnen", true, None), MenuItem::new("Backup jetzt", true, None), MenuItem::new("Beenden", true, None));
+/// Baut Icon und Menü; liefert zusätzlich die Menü-IDs (Öffnen, Backup, Pause, Fortsetzen, Beenden).
+fn build() -> Option<(TrayIcon, [MenuId; 5])> {
+    let open = MenuItem::new("Öffnen", true, None);
+    let backup = MenuItem::new("Backup jetzt", true, None);
+    let pause = MenuItem::new("Zeitplan pausieren (bis morgen)", true, None);
+    let resume = MenuItem::new("Zeitplan fortsetzen", true, None);
+    let quit = MenuItem::new("Beenden", true, None);
     let menu = Menu::new();
-    menu.append_items(&[&open, &backup, &PredefinedMenuItem::separator(), &quit]).ok()?;
+    menu.append_items(&[&open, &backup, &PredefinedMenuItem::separator(), &pause, &resume, &PredefinedMenuItem::separator(), &quit]).ok()?;
     let tray = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("restic Backup").with_icon(icon()?).build().ok()?;
-    Some((tray, [open.id().clone(), backup.id().clone(), quit.id().clone()]))
+    Some((tray, [open.id().clone(), backup.id().clone(), pause.id().clone(), resume.id().clone(), quit.id().clone()]))
 }
 
-fn install_handlers(ids: [MenuId; 3], tx: Sender<TrayCmd>, ctx: egui::Context) {
+fn install_handlers(ids: [MenuId; 5], tx: Sender<TrayCmd>, ctx: egui::Context) {
     let tx_menu = tx.clone();
     let ctx_menu = ctx.clone();
     MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
@@ -43,6 +49,10 @@ fn install_handlers(ids: [MenuId; 3], tx: Sender<TrayCmd>, ctx: egui::Context) {
         } else if e.id == ids[1] {
             TrayCmd::Backup
         } else if e.id == ids[2] {
+            TrayCmd::Pause
+        } else if e.id == ids[3] {
+            TrayCmd::Resume
+        } else if e.id == ids[4] {
             TrayCmd::Quit
         } else {
             return;
