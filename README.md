@@ -64,13 +64,13 @@ Voraussetzungen: Rust (stable), restic im PATH (für die Integrationstests). Lin
 Einmalig nach dem Klonen aktivieren: `git config core.hooksPath .githooks` – der `pre-push`-Hook blockiert Pushes direkt auf `main`. (Zusätzlich ist `main` auf GitHub per Branch-Protection geschützt.)
 
 ### Release
-Release läuft vollautomatisch über GitHub Actions, immer ausgehend von `main`:
-1. GitHub → **Actions** → Workflow **release** → **Run workflow** (Branch `main`), Versionsnummer eingeben (z. B. `0.3.1`).
-2. Der Workflow prüft die Version (X.Y.Z, größer als die aktuelle, Tag noch frei), setzt sie in `Cargo.toml`/`Cargo.lock` und benennt den Abschnitt „Unveröffentlicht“ im `CHANGELOG.md` um.
-3. Der Stand wird auf `release/vX.Y.Z` gebaut und getestet (Windows-Setup, portable `.exe`, `.deb`, AppImage).
-4. Nur wenn alles grün ist: `main` wird auf diesen Stand vorgespult, Tag `vX.Y.Z` und GitHub-Release mit allen Paketen entstehen, der Release-Branch wird gelöscht.
+Wie beim cctv-viewer: Die Version wird im Pull Request erhöht, das Release startest du danach von Hand. Der Release-Workflow ändert nichts an `main` und braucht keine PR-Berechtigung.
+1. **Im Feature-PR:** `version` in `Cargo.toml` erhöhen, `cargo update --workspace` (zieht `Cargo.lock` nach) und im `CHANGELOG.md` `## [Unveröffentlicht]` in `## [X.Y.Z]` umbenennen (danach bei Bedarf einen neuen leeren Abschnitt „Unveröffentlicht“ anlegen). Nur Versionen im Format `X.Y.Z`.
+2. PR mergen, danach baut `build.yml` den `main`-Commit (Windows-Setup, portable `.exe`, `.deb`, AppImage; die Pakete bleiben 90 Tage als Artefakte).
+3. Wenn der Build grün ist: GitHub → **Actions** → **release** → **Run workflow** (Branch `main`), Version eingeben (z. B. `0.3.9`, optional einen vollständigen Commit-SHA; leer = aktueller `main`).
+4. Der Workflow prüft, dass Cargo.toml, Cargo.lock und CHANGELOG zur Version passen, dass der Commit zu `main` gehört und dass genau dieser Commit einen erfolgreichen Build hat. Dann legt er das Release als Entwurf an (Text aus dem Changelog), hängt die **unveränderten** gebauten Pakete plus `SHA256SUMS.txt` an und veröffentlicht erst danach. „Neueste“ rückt nur vor, wenn die Version die höchste ist.
 
-Neue Änderungen vorher im `CHANGELOG.md` unter `## [Unveröffentlicht]` sammeln. Wird `main` später geschützt, ein Personal Access Token mit Schreibrecht (Bypass für den Schutz) als Secret `RELEASE_TOKEN` hinterlegen. Ein manuell gesetzter Tag `v*` löst weiterhin den Build samt Release aus.
+Wiederholung mit derselben Version und demselben Commit ist unschädlich (nichts zu tun bzw. ein halb fertiger Entwurf wird fortgesetzt); ein Tag, der auf einen anderen Commit zeigt, wird abgelehnt. Hat ein `main`-Commit keinen Build (reine Doku-Änderung), vorher **Actions → build → Run workflow** auf `main` starten.
 
 ## Lizenz
 MIT – siehe [LICENSE](LICENSE).
