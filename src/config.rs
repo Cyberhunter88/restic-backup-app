@@ -191,6 +191,16 @@ pub fn check_due(last: Option<&LastCheck>, interval_days: u32, now: chrono::Naiv
 /// Zeitstempel-Dateien im Datenverzeichnis (letzter Erfolg, Pause, Hinweise …).
 const TS_FMT: &str = "%Y-%m-%d %H:%M:%S";
 
+/// Schreibt erst in eine Nachbardatei und benennt sie dann um, damit ein Absturz oder Stromausfall
+/// mitten im Schreiben keine halbe (unlesbare) Datei hinterlässt.
+fn write_atomic(path: &std::path::Path, content: &str) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, content)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| drop(std::fs::remove_file(&tmp)))
+}
+
 fn read_ts(name: &str) -> Option<chrono::NaiveDateTime> {
     let text = std::fs::read_to_string(data_dir().ok()?.join(name)).ok()?;
     chrono::NaiveDateTime::parse_from_str(text.trim(), TS_FMT).ok()
@@ -199,8 +209,7 @@ fn read_ts(name: &str) -> Option<chrono::NaiveDateTime> {
 fn write_ts(name: &str, t: chrono::NaiveDateTime) {
     if let Ok(d) = data_dir() {
         let _ = std::fs::create_dir_all(&d);
-        let _ = std::fs::write(d.join(name), format!("{}
-", t.format(TS_FMT)));
+        let _ = write_atomic(&d.join(name), &format!("{}\n", t.format(TS_FMT)));
     }
 }
 
@@ -346,7 +355,7 @@ impl Config {
     pub fn save(&self) -> Result<()> {
         let p = config_path()?;
         std::fs::create_dir_all(p.parent().unwrap())?;
-        std::fs::write(&p, toml::to_string_pretty(self)?)?;
+        write_atomic(&p, &toml::to_string_pretty(self)?)?;
         Ok(())
     }
 
@@ -422,6 +431,16 @@ mod tests {
         assert!(Config::import_from(&p).is_err());
         std::fs::write(&p, "schedule_times = []").unwrap();
         assert!(Config::import_from(&p).is_err());
+    }
+
+    #[test]
+    fn write_atomic_replaces_and_leaves_no_temp() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("x.txt");
+        write_atomic(&p, "alt").unwrap();
+        write_atomic(&p, "neu").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "neu");
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
     }
 
     #[test]
