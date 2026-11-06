@@ -9,7 +9,7 @@
 - Einstellungen und Zustandsdateien (letzter Erfolg, Pause …) werden atomar geschrieben und bleiben bei Absturz oder Stromausfall heil.
 
 ### Geändert
-- Release-Workflow vereinfacht: keine Eingaben mehr, die Version kommt aus der `Cargo.toml` von `main`; Changelog-Abschnitt und Commit-SHA sind nicht mehr nötig.
+- Release-Workflow vereinfacht: keine Eingaben mehr, die Version kommt aus der `Cargo.toml` von `main`; Changelog-Abschnitt und Commit-SHA sind nicht mehr nötig (`Cargo.lock` muss weiter zur Version passen).
 - Release-Ablauf wie beim cctv-viewer: Die Version wird im Pull Request erhöht; der manuell gestartete Workflow `release` prüft Version, Changelog und den Build des Commits, veröffentlicht die dort gebauten Pakete unverändert (mit `SHA256SUMS.txt`) und ändert nichts an `main`. `build.yml` veröffentlicht nicht mehr selbst.
 
 ## [0.3.8]

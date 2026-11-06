@@ -53,6 +53,8 @@ jobs:
           COMMIT=$(git rev-parse origin/main)
           VERSION=$(git show "$COMMIT:Cargo.toml" | grep -m1 '^version' | sed 's/.*"\(.*\)".*/\1/')
           [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "Ungültige Version „$VERSION“ in Cargo.toml (erwartet X.Y.Z)."
+          LOCK=$(git show "$COMMIT:Cargo.lock" | awk '/^name = "restic-backup-app"$/ {getline; gsub(/version = |"/, ""); print; exit}')
+          [ "$LOCK" = "$VERSION" ] || fail "Cargo.lock hat Version $LOCK, Cargo.toml $VERSION (cargo update --workspace im PR)."
 
           # Schon veröffentlicht? Gleiche Version + gleicher Commit = nichts zu tun, anderer Commit = Fehler
           TAG_COMMIT=$(git rev-parse -q --verify "refs/tags/v$VERSION^{commit}" || true)
