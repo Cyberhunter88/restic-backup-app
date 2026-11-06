@@ -51,7 +51,7 @@ jobs:
           fail() { echo "::error::$1"; echo "## Release abgebrochen: $1 Es wurde nichts veröffentlicht." >> "$GITHUB_STEP_SUMMARY"; exit 1; }
 
           COMMIT=$(git rev-parse origin/main)
-          VERSION=$(git show "$COMMIT:Cargo.toml" | grep -m1 '^version' | sed 's/.*"\(.*\)"//')
+          VERSION=$(git show "$COMMIT:Cargo.toml" | grep -m1 '^version' | sed 's/.*"\(.*\)".*//')
           [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "Ungültige Version „$VERSION“ in Cargo.toml (erwartet X.Y.Z)."
 
           # Schon veröffentlicht? Gleiche Version + gleicher Commit = nichts zu tun, anderer Commit = Fehler
