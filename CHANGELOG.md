@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unveröffentlicht]
+
+### Neu
+- Zeitplan für Laptops: Der Zeitplan startet das Programm jetzt zu den Uhrzeiten, bei der Anmeldung, beim Entsperren und alle 30 Minuten (Linux: Timer beim Start der Sitzung und alle 30 Minuten auf der Echtzeituhr, auch nach dem Aufwachen). Gesichert wird nur, wenn seit dem letzten geplanten Termin noch kein Backup gelang – kein doppeltes Sichern mehr nach langer Pause oder kurz nach einem manuellen Lauf.
+- Ist das NAS nicht erreichbar (z. B. unterwegs), wird der Zeitplan-Lauf still übersprungen: kein Fehler, keine Meldung, `last-run.log` und Verlauf bleiben unverändert. Der nächste Trigger versucht es erneut.
+- Meldung „Backup überfällig“, wenn seit einstellbar vielen Tagen (Standard 3, 0 = aus) kein Backup gelang; höchstens einmal täglich.
+- Option „Nur am Netzteil sichern“ (Windows: Task-Einstellung, Linux: `ConditionACPower`). Windows startet den Task außerdem nur bei vorhandener Netzwerkverbindung.
+- Zeitplan pausieren (bis morgen früh oder eine Woche) im Zeitplan-Tab und im Tray-Menü; Anzeige im Backup-Tab.
+- Ein Backup läuft nie doppelt (GUI und Zeitplan sperren sich gegenseitig, die Sperre wird bei Absturz oder Stromausfall automatisch frei).
+- Update-Suche: Info-Tab „Nach Updates suchen“; beim Start höchstens einmal täglich (abschaltbar). Es wird nur die öffentliche GitHub-Release-Seite abgefragt.
+
+### Geändert
+- Der Zeitplan startet `--scheduled` statt `--run-backup` (`--run-backup` sichert weiterhin immer). **Nach dem Update den Zeitplan einmal neu aktivieren.**
+- Verbindungsversuche im Zeitplan-Lauf: 2 × 30 s statt 5 × 60 s, dafür vorher ein kurzer Erreichbarkeitstest.
+- Windows: Zeitplan entfernen braucht nur noch einen PowerShell-Aufruf statt 25 `schtasks`-Prozessen.
+
 ## [0.3.7]
 
 - Release 0.3.7

@@ -34,6 +34,12 @@ pub struct Config {
     pub schedule_times: Vec<String>,
     /// Wochentage (Mo..So), an denen der Zeitplan gilt
     pub schedule_days: [bool; 7],
+    /// Zeitplan-Läufe nur am Netzteil starten (Laptop)
+    pub only_on_ac: bool,
+    /// Meldung, wenn so viele Tage kein Backup gelungen ist (0 = aus)
+    pub warn_after_days: u32,
+    /// Beim Start der App (höchstens einmal täglich) nach einer neuen Version suchen
+    pub check_updates: bool,
     /// Alte Einstellung (nur zum Übernehmen älterer Konfigurationen)
     #[serde(skip_serializing)]
     schedule_time: String,
@@ -61,6 +67,9 @@ impl Default for Config {
             check_subset_percent: 5,
             schedule_times: vec!["02:00".into()],
             schedule_days: [true; 7],
+            only_on_ac: false,
+            warn_after_days: 3,
+            check_updates: true,
             schedule_time: String::new(),
             restic_bin: default_restic_bin(),
         }
@@ -179,6 +188,90 @@ pub fn check_due(last: Option<&LastCheck>, interval_days: u32, now: chrono::Naiv
     interval_days > 0 && last.is_none_or(|l| now.signed_duration_since(l.time).num_days() >= interval_days as i64)
 }
 
+/// Zeitstempel-Dateien im Datenverzeichnis (letzter Erfolg, Pause, Hinweise …).
+const TS_FMT: &str = "%Y-%m-%d %H:%M:%S";
+
+fn read_ts(name: &str) -> Option<chrono::NaiveDateTime> {
+    let text = std::fs::read_to_string(data_dir().ok()?.join(name)).ok()?;
+    chrono::NaiveDateTime::parse_from_str(text.trim(), TS_FMT).ok()
+}
+
+fn write_ts(name: &str, t: chrono::NaiveDateTime) {
+    if let Ok(d) = data_dir() {
+        let _ = std::fs::create_dir_all(&d);
+        let _ = std::fs::write(d.join(name), format!("{}
+", t.format(TS_FMT)));
+    }
+}
+
+fn now() -> chrono::NaiveDateTime {
+    chrono::Local::now().naive_local()
+}
+
+/// Zeitpunkt des letzten erfolgreichen Backups (auch mit Warnungen).
+pub fn read_last_success() -> Option<chrono::NaiveDateTime> {
+    read_ts("last-success.txt")
+}
+
+/// Bis wann der Zeitplan pausiert ist (falls gesetzt).
+pub fn read_pause() -> Option<chrono::NaiveDateTime> {
+    read_ts("pause-until.txt")
+}
+
+pub fn write_pause(until: Option<chrono::NaiveDateTime>) {
+    match until {
+        Some(t) => write_ts("pause-until.txt", t),
+        None => {
+            if let Ok(d) = data_dir() {
+                let _ = std::fs::remove_file(d.join("pause-until.txt"));
+            }
+        }
+    }
+}
+
+/// Ist die Pause zum Zeitpunkt `now` noch aktiv?
+pub fn pause_active(until: Option<chrono::NaiveDateTime>, now: chrono::NaiveDateTime) -> bool {
+    until.is_some_and(|u| u > now)
+}
+
+/// Wann zuletzt die „Seit X Tagen kein Backup“-Meldung gesendet wurde.
+pub fn read_overdue_notice() -> Option<chrono::NaiveDateTime> {
+    read_ts("last-overdue-notice.txt")
+}
+
+pub fn write_overdue_notice() {
+    write_ts("last-overdue-notice.txt", now());
+}
+
+/// Wann zuletzt nach einer neuen Version gesucht wurde.
+pub fn read_update_check() -> Option<chrono::NaiveDateTime> {
+    read_ts("update-check.txt")
+}
+
+pub fn write_update_check() {
+    write_ts("update-check.txt", now());
+}
+
+/// Sperre gegen parallele Backups (GUI und Zeitplan). Eine Betriebssystem-Dateisperre,
+/// die auch nach einem Absturz oder Stromausfall automatisch frei wird.
+pub struct RunLock {
+    _file: std::fs::File,
+}
+
+impl RunLock {
+    /// `Ok(None)`: Es läuft bereits ein Backup.
+    pub fn acquire() -> Result<Option<Self>> {
+        let d = data_dir()?;
+        std::fs::create_dir_all(&d)?;
+        let f = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(d.join("run.lock"))?;
+        match f.try_lock() {
+            Ok(()) => Ok(Some(Self { _file: f })),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+        }
+    }
+}
+
 /// Ein Eintrag im lokalen Verlauf.
 pub struct HistoryEntry {
     pub time: String,
@@ -216,6 +309,9 @@ pub fn read_history(n: usize) -> Vec<HistoryEntry> {
 /// Schreibt das Protokoll des letzten Laufs (Zeitplan oder GUI) in `last-run.log` und ergänzt den Verlauf.
 pub fn write_last_run(ok: bool, lines: &[String]) -> Result<()> {
     let _ = append_history(ok, lines);
+    if ok {
+        write_ts("last-success.txt", now());
+    }
     let p = last_run_path()?;
     std::fs::create_dir_all(p.parent().unwrap())?;
     let head = format!("{} – {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), if ok { "ERFOLGREICH" } else { "FEHLER" });
@@ -339,6 +435,15 @@ mod tests {
         assert!(!check_due(None, 0, now));
         assert!(!check_due(Some(&l), 0, now));
         assert_eq!(parse_last_check("kaputt"), None);
+    }
+
+    #[test]
+    fn pause_rules() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap().and_hms_opt(12, 0, 0).unwrap();
+        assert!(!pause_active(None, now));
+        assert!(pause_active(Some(now + chrono::Duration::hours(1)), now));
+        assert!(!pause_active(Some(now), now));
+        assert!(!pause_active(Some(now - chrono::Duration::days(1)), now));
     }
 
     #[test]

@@ -8,6 +8,7 @@ mod job;
 mod notify;
 mod restic;
 mod schedule;
+mod scheduled;
 mod secrets;
 mod smb;
 mod tray;
@@ -22,15 +23,24 @@ struct Cli {
     /// Backup ohne GUI ausführen (für Zeitplan)
     #[arg(long)]
     run_backup: bool,
+    /// Wie vom Zeitplan: sichert nur, wenn ein Backup fällig ist, keine Pause aktiv und das NAS erreichbar ist
+    #[arg(long)]
+    scheduled: bool,
     /// Beim Anmelden gestartet: Fenster minimiert öffnen
     #[arg(long)]
     autostart: bool,
 }
 
-fn run_headless() -> anyhow::Result<()> {
+/// Backup ohne GUI. `quiet_if_busy`: Läuft schon ein Backup, endet der Zeitplan-Lauf still (kein Fehler).
+fn run_headless(quiet_if_busy: bool) -> anyhow::Result<()> {
     let cfg = config::Config::load()?;
     let mut lines: Vec<String> = vec![];
     let result = job::run_backup(&cfg, false, &std::sync::atomic::AtomicBool::new(false), |m| lines.push(m), |_| {});
+    // Das laufende Backup nicht mit einer Fehlermeldung überschreiben
+    if result.as_ref().is_err_and(|e| e.downcast_ref::<job::AlreadyRunning>().is_some()) {
+        println!("Es läuft bereits ein Backup.");
+        return if quiet_if_busy { Ok(()) } else { result.map(|_| ()) };
+    }
     match &result {
         Ok(o) => lines.push(if o.warnings { "Backup mit Warnungen abgeschlossen." } else { "Backup abgeschlossen." }.into()),
         Err(e) => lines.push(format!("FEHLER: {e:#}")),
@@ -45,8 +55,11 @@ fn run_headless() -> anyhow::Result<()> {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if cli.scheduled {
+        return scheduled::run();
+    }
     if cli.run_backup {
-        return run_headless();
+        return run_headless(false);
     }
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../packaging/icon.png")).ok();
     let mut viewport = eframe::egui::ViewportBuilder::default().with_inner_size([960.0, 680.0]).with_min_inner_size([760.0, 520.0]);

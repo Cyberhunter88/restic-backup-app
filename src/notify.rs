@@ -13,6 +13,17 @@ pub fn message(warnings: bool, error: Option<&str>) -> Option<(String, String)> 
     }
 }
 
+/// Hinweis, dass seit `days` Tagen kein Backup mehr gelungen ist.
+pub fn overdue_message(days: i64) -> (String, String) {
+    ("Backup überfällig".into(), format!("Seit {days} Tagen ist kein Backup gelungen (NAS nicht erreichbar oder Laptop nicht am Netzteil?)."))
+}
+
+/// Meldung „überfällig“ senden; Fehler dabei werden ignoriert.
+pub fn backup_overdue(days: i64) {
+    let (title, body) = overdue_message(days);
+    let _ = notify_rust::Notification::new().appname("restic Backup").summary(&title).body(&body).show();
+}
+
 /// Sendet die Benachrichtigung; Fehler dabei (z. B. kein Benachrichtigungsdienst) werden ignoriert.
 pub fn backup_finished(warnings: bool, error: Option<&str>) {
     if let Some((title, body)) = message(warnings, error) {
@@ -31,5 +42,6 @@ mod tests {
         let (t, b) = message(false, Some("erste\nzweite")).unwrap();
         assert_eq!(t, "Backup fehlgeschlagen");
         assert_eq!(b, "erste");
+        assert!(overdue_message(4).1.contains("4 Tagen"));
     }
 }
