@@ -64,13 +64,13 @@ Voraussetzungen: Rust (stable), restic im PATH (für die Integrationstests). Lin
 Einmalig nach dem Klonen aktivieren: `git config core.hooksPath .githooks` – der `pre-push`-Hook blockiert Pushes direkt auf `main`. (Zusätzlich ist `main` auf GitHub per Branch-Protection geschützt.)
 
 ### Release
-Release läuft vollautomatisch über GitHub Actions, immer ausgehend von `main`:
-1. GitHub → **Actions** → Workflow **release** → **Run workflow** (Branch `main`), Versionsnummer eingeben (z. B. `0.3.1`).
-2. Der Workflow prüft die Version (X.Y.Z, größer als die aktuelle, Tag noch frei), setzt sie in `Cargo.toml`/`Cargo.lock` und benennt den Abschnitt „Unveröffentlicht“ im `CHANGELOG.md` um.
-3. Der Stand wird auf `release/vX.Y.Z` gebaut und getestet (Windows-Setup, portable `.exe`, `.deb`, AppImage).
-4. Nur wenn alles grün ist: `main` wird auf diesen Stand vorgespult, Tag `vX.Y.Z` und GitHub-Release mit allen Paketen entstehen, der Release-Branch wird gelöscht.
+Eine neue Version entsteht, indem der Pull Request die Version selbst erhöht – ein Release-Workflow ist nicht nötig:
+1. Im Feature-Branch die Version in `Cargo.toml` erhöhen und `Cargo.lock` nachziehen: `cargo update --workspace` (nur die eigene Version ändert sich).
+2. Im `CHANGELOG.md` den Abschnitt `## [Unveröffentlicht]` in `## [X.Y.Z]` umbenennen.
+3. Pull Request öffnen; der Build prüft und baut Windows-Setup, portable `.exe`, `.deb` und AppImage.
+4. Nach dem Mergen baut `build.yml` `main`. Gibt es die Version aus `Cargo.toml` noch nicht als Release, legt der Job `release` Tag `vX.Y.Z` und das GitHub-Release mit allen Paketen an.
 
-Neue Änderungen vorher im `CHANGELOG.md` unter `## [Unveröffentlicht]` sammeln. Wird `main` später geschützt, ein Personal Access Token mit Schreibrecht (Bypass für den Schutz) als Secret `RELEASE_TOKEN` hinterlegen. Ein manuell gesetzter Tag `v*` löst weiterhin den Build samt Release aus.
+Ohne Versionserhöhung entsteht beim Mergen kein Release, die Änderungen bleiben unter `## [Unveröffentlicht]`. Ein manuell gesetzter Tag `v*` löst weiterhin den Build samt Release aus.
 
 ## Lizenz
 MIT – siehe [LICENSE](LICENSE).
