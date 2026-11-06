@@ -1,22 +1,13 @@
 name: release
 
-# Manuell starten: Actions → release → "Run workflow" (Branch: main), Version eingeben (z. B. 0.3.9).
-# Wie beim cctv-viewer: Die Version steht schon im getesteten Commit (im PR erhöht, siehe README).
-# Der Workflow ändert nichts an main und legt keinen PR an. Er prüft Version, Changelog und die
+# Manuell starten: Actions → release → "Run workflow" (Branch: main), ohne Eingaben.
+# Die Version ist die `version` aus der Cargo.toml des aktuellen main-Stands (im PR erhöht).
+# Der Workflow ändert nichts an main und legt keinen PR an. Er prüft die
 # erfolgreiche Build-Prüfung genau dieses Commits, nimmt die dort gebauten Pakete (kein Neubau),
 # legt ein Release als Entwurf an, hängt die Dateien an und veröffentlicht erst danach.
 # Wiederholung mit derselben Version und demselben Commit ist unschädlich.
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version ohne v, z. B. 0.3.9 (muss schon in Cargo.toml und CHANGELOG des Commits stehen)"
-        required: true
-        type: string
-      commit:
-        description: "Optional: vollständiger SHA eines main-Commits (leer = aktueller Stand von main)"
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -55,30 +46,15 @@ jobs:
       - id: check
         env:
           GH_TOKEN: ${{ github.token }}
-          REQUESTED_VERSION: ${{ inputs.version }}
-          REQUESTED_COMMIT: ${{ inputs.commit }}
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; echo "## Release abgebrochen: $1 Es wurde nichts veröffentlicht." >> "$GITHUB_STEP_SUMMARY"; exit 1; }
 
-          VERSION="${REQUESTED_VERSION//[[:space:]]/}"; VERSION="${VERSION#v}"
-          [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "Ungültige Version „$VERSION“ (erwartet X.Y.Z)."
-
-          COMMIT="${REQUESTED_COMMIT//[[:space:]]/}"
-          if [ -z "$COMMIT" ]; then
-            COMMIT=$(git rev-parse origin/main)
-          else
-            [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "Commit muss ein vollständiger 40-stelliger SHA sein."
-            git cat-file -e "$COMMIT^{commit}" 2>/dev/null || fail "Commit $COMMIT existiert nicht."
-            git merge-base --is-ancestor "$COMMIT" origin/main || fail "Commit $COMMIT gehört nicht zu main."
-          fi
-
-          # Die Version muss Teil des getesteten Commits sein (wird nie vom Workflow geändert)
-          CARGO=$(git show "$COMMIT:Cargo.toml" | grep -m1 '^version' | sed 's/.*"\(.*\)"/\1/')
+          COMMIT=$(git rev-parse origin/main)
+          VERSION=$(git show "$COMMIT:Cargo.toml" | grep -m1 '^version' | sed 's/.*"\(.*\)".*/\1/')
+          [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "Ungültige Version „$VERSION“ in Cargo.toml (erwartet X.Y.Z)."
           LOCK=$(git show "$COMMIT:Cargo.lock" | awk '/^name = "restic-backup-app"$/ {getline; gsub(/version = |"/, ""); print; exit}')
-          [ "$CARGO" = "$VERSION" ] || fail "Cargo.toml hat Version $CARGO, gewünscht ist $VERSION. Version zuerst im PR erhöhen."
-          [ "$LOCK" = "$VERSION" ] || fail "Cargo.lock hat Version $LOCK, gewünscht ist $VERSION (cargo update --workspace im PR)."
-          git show "$COMMIT:CHANGELOG.md" | grep -Fxq "## [$VERSION]" || fail "CHANGELOG.md hat keinen Abschnitt „## [$VERSION]“ (Unveröffentlicht im PR umbenennen)."
+          [ "$LOCK" = "$VERSION" ] || fail "Cargo.lock hat Version $LOCK, Cargo.toml $VERSION (cargo update --workspace im PR)."
 
           # Schon veröffentlicht? Gleiche Version + gleicher Commit = nichts zu tun, anderer Commit = Fehler
           TAG_COMMIT=$(git rev-parse -q --verify "refs/tags/v$VERSION^{commit}" || true)
@@ -141,7 +117,8 @@ jobs:
           ls -l dist
       - name: Release-Text aus dem Changelog
         run: |
-          git show "$COMMIT:CHANGELOG.md" | awk -v h="## [$VERSION]" '$0 == h {on=1; next} /^## \[/ {on=0} on' | sed '/./,$!d' > "$RUNNER_TEMP/notes.md"
+          # Text aus dem Changelog, falls es einen Abschnitt zur Version gibt (kein Muss)
+          git show "$COMMIT:CHANGELOG.md" 2>/dev/null | awk -v h="## [$VERSION]" '$0 == h {on=1; next} /^## \[/ {on=0} on' | sed '/./,$!d' > "$RUNNER_TEMP/notes.md" || true
           if [ ! -s "$RUNNER_TEMP/notes.md" ]; then echo "Release $VERSION" > "$RUNNER_TEMP/notes.md"; fi
           cat "$RUNNER_TEMP/notes.md"
       - name: Entwurf anlegen, Dateien anhängen, prüfen
