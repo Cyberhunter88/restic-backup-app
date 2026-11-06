@@ -127,6 +127,9 @@ fn backup_sources(r: &Restic, cfg: &Config, host: &str, cancel: &AtomicBool, mut
 /// Mount → (init) → Backup → Aufräumen → Unmount.
 pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log: impl FnMut(String), on_event: impl FnMut(BackupEvent)) -> Result<BackupOutcome> {
     cfg.validate()?;
+    if !cfg.is_ready() {
+        bail!("Einstellungen unvollständig: NAS-Adresse, Freigabe und mindestens ein Quellordner sind nötig");
+    }
     let _lock = crate::config::RunLock::acquire()?.ok_or(AlreadyRunning)?;
     log("Verbinde mit NAS …".into());
     // Zeitplan-Lauf (headless): 2 Versuche à 30 s (die Erreichbarkeit wurde vorher geprüft), GUI-Lauf: sofort melden
@@ -144,9 +147,14 @@ pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log
             RepoState::Error(e) => bail!("Repository nicht erreichbar: {e}"),
         }
         let outcome = backup_sources(&r, cfg, &host, cancel, &mut log, on_event)?;
-        log("Räume alte Snapshots auf …".into());
-        r.forget(cfg.keep_daily, cfg.keep_weekly, cfg.keep_monthly, &host)?;
         let mut outcome = outcome;
+        // Der Snapshot ist schon geschrieben: scheitert nur das Aufräumen (z. B. Repo von einem anderen Rechner
+        // gesperrt), ist das eine Warnung. Als Fehler würde der Zeitplan alle 30 Minuten neu sichern.
+        log("Räume alte Snapshots auf …".into());
+        if let Err(e) = r.forget(cfg.keep_daily, cfg.keep_weekly, cfg.keep_monthly, &host) {
+            log(format!("Warnung: Aufräumen fehlgeschlagen: {e:#}"));
+            outcome.warnings = true;
+        }
         // Regelmäßige Teilprüfung nur im Zeitplan-Lauf; ein Fehler dort ist eine Warnung, kein Backup-Fehler
         if !keep_mounted && crate::config::check_due(crate::config::read_last_check().as_ref(), cfg.check_interval_days, chrono::Local::now().naive_local()) {
             log(format!("Prüfe Repository ({} % der Daten) …", cfg.check_subset_percent));

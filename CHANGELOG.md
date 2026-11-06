@@ -1,6 +1,12 @@
 # Changelog
 
-## [Unveröffentlicht]
+## [0.3.9]
+
+### Behoben
+- Scheitert nach einem erfolgreichen Backup nur das Aufräumen alter Snapshots (z. B. Repo gesperrt), gilt der Lauf jetzt als Warnung statt als Fehler; vorher sicherte der Zeitplan deshalb alle 30 Minuten erneut.
+- Backup konnte hängen bleiben, wenn restic eine Zeile mit ungültiger UTF-8-Kodierung ausgab.
+- Ein Lauf ohne NAS-Adresse, Freigabe oder Quellordner endet mit einer klaren Meldung statt einer leeren Fehlermeldung.
+- Einstellungen und Zustandsdateien (letzter Erfolg, Pause …) werden atomar geschrieben und bleiben bei Absturz oder Stromausfall heil.
 
 ### Geändert
 - Release-Ablauf wie beim cctv-viewer: Die Version wird im Pull Request erhöht; der manuell gestartete Workflow `release` prüft Version, Changelog und den Build des Commits, veröffentlicht die dort gebauten Pakete unverändert (mit `SHA256SUMS.txt`) und ändert nichts an `main`. `build.yml` veröffentlicht nicht mehr selbst.

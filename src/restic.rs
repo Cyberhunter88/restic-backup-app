@@ -335,8 +335,17 @@ impl Restic {
                     std::thread::sleep(std::time::Duration::from_millis(200));
                 }
             });
-            for line in BufReader::new(stdout).lines().map_while(|l| l.ok()) {
-                if let Some(ev) = parse_backup_line(&line) {
+            // Bytes statt `lines()`: eine nicht-UTF-8-Zeile (z. B. exotischer Dateiname) würde sonst das Lesen
+            // beenden, restic bliebe an der vollen Pipe hängen und `wait()` würde nie zurückkehren.
+            let mut reader = BufReader::new(stdout);
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                match reader.read_until(b'\n', &mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                if let Some(ev) = parse_backup_line(&String::from_utf8_lossy(&buf)) {
                     got_summary |= matches!(ev, BackupEvent::Summary { .. });
                     on_event(ev);
                 }

@@ -125,11 +125,8 @@ mod linux {
         let uid = std::fs::metadata(&mp)?.uid();
         let gid = std::fs::metadata(&mp)?.gid();
         // Credentials-Datei (0600), damit das Passwort nicht in der Prozessliste auftaucht
-        let cred = crate::config::data_dir()?.join("smb.cred");
-        let _ = std::fs::remove_file(&cred);
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&cred)?;
-        writeln!(f, "username={}\npassword={}", cfg.smb_user, password)?;
-        drop(f);
+        write_credentials(cfg, password)?;
+        let cred = cred_path()?;
         let out = Command::new("pkexec")
             .arg("mount")
             .args(["-t", "cifs", &format!("//{}/{}", cfg.host, cfg.share)])
