@@ -20,6 +20,9 @@ SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequiredOverridesAllowed=dialog
 WizardStyle=modern
+; Die laufende App beenden wir selbst (siehe [Code]); sie versteckt sich beim Schließen im Tray
+; und würde auf die Anfrage des Restart Managers nicht zuverlässig reagieren.
+CloseApplications=no
 
 [Languages]
 Name: "german"; MessagesFile: "compiler:Languages\German.isl"
@@ -41,3 +44,25 @@ Filename: "{app}\restic-backup-app.exe"; Description: "restic Backup starten"; F
 
 [UninstallRun]
 Filename: "schtasks"; Parameters: "/delete /f /tn restic-backup-app"; Flags: runhidden; RunOnceId: "RemoveSchedule"
+
+[Code]
+// Beendet eine laufende Instanz (Fenster, Tray oder Zeitplan-Lauf), damit die Datei ersetzt werden kann.
+procedure AppBeenden();
+var
+  Code: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM restic-backup-app.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Sleep(500);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  AppBeenden();
+  Result := '';
+end;
+
+function InitializeUninstall(): Boolean;
+begin
+  AppBeenden();
+  Result := True;
+end;
