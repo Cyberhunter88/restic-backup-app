@@ -16,7 +16,7 @@ pub fn repo_path(cfg: &Config) -> Result<String> {
     }
     #[cfg(windows)]
     {
-        let base = format!(r"\\{}\{}", cfg.host, cfg.share);
+        let base = format!(r"\\{}\{}", windows::host(cfg), cfg.share);
         Ok(if sub.is_empty() { base } else { format!(r"{}\{}", base, sub.replace('/', r"\")) })
     }
 }
@@ -166,6 +166,21 @@ mod windows {
     use std::io::Write;
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
+    use std::sync::Mutex;
+
+    /// Servername, unter dem die Freigabe in diesem Lauf erreichbar ist (die eingestellte Adresse
+    /// oder ein Alias, siehe `mount`).
+    static EFFECTIVE_HOST: Mutex<Option<String>> = Mutex::new(None);
+
+    pub fn host(cfg: &Config) -> String {
+        EFFECTIVE_HOST.lock().ok().and_then(|h| h.clone()).unwrap_or_else(|| cfg.host.clone())
+    }
+
+    fn set_host(h: &str) {
+        if let Ok(mut g) = EFFECTIVE_HOST.lock() {
+            *g = Some(h.to_string());
+        }
+    }
 
     fn net(args: &[&str]) -> Result<std::process::Output> {
         Ok(Command::new("net").args(args).creation_flags(0x0800_0000).output()?)
@@ -180,28 +195,27 @@ mod windows {
         text(o).contains("1219")
     }
 
-    /// Fehler 1219: Windows erlaubt je NAS nur eine Anmeldung gleichzeitig. Ist die Freigabe trotzdem
-    /// zugreifbar, ist alles gut; sonst ein verständlicher Fehler statt eines späten restic-Fehlers.
-    fn conflicting_login(unc: &str) -> Result<bool> {
-        if std::fs::read_dir(unc).is_ok() {
-            return Ok(false);
-        }
-        bail!("Windows ist mit diesem NAS bereits unter einem anderen Benutzer verbunden (z. B. über ein Netzlaufwerk) und erlaubt nur eine Anmeldung. Die Verbindungen zum NAS trennen (`net use * /delete`) oder für alle Freigaben denselben Benutzer verwenden.");
+    /// Ergebnis eines Verbindungsversuchs zu einem Servernamen.
+    enum Conn {
+        /// Ohne Zutun zugreifbar (z. B. vom Nutzer verbunden)
+        Existing,
+        /// Von der App neu aufgebaut
+        New,
+        /// Windows hat für diesen Server schon eine Anmeldung mit anderem Benutzer (Fehler 1219)
+        Conflict,
     }
 
-    /// Verbindet die Freigabe. Das Passwort wird über stdin übergeben (nicht als Argument).
-    /// Liefert `true`, wenn die App die Verbindung neu aufgebaut hat.
-    pub fn mount(cfg: &Config, password: &str) -> Result<bool> {
-        let unc = format!(r"\\{}\{}", cfg.host, cfg.share);
-        // Schon zugreifbar (z. B. vom Nutzer verbunden)? Dann nichts anfassen und später nicht trennen.
+    fn connect(host: &str, cfg: &Config, password: &str) -> Result<Conn> {
+        let unc = format!(r"\{host}\{}", cfg.share);
         // Echter Zugriffstest statt `net use`: ein „getrennter“ Eintrag mit falschen Anmeldedaten
         // meldete sonst Erfolg, und erst restic scheiterte mit „Benutzername oder Kennwort falsch“.
         if std::fs::read_dir(&unc).is_ok() {
-            return Ok(false);
+            return Ok(Conn::Existing);
         }
         // Veralteten Eintrag für genau diese Freigabe entfernen (Fehler egal, falls keiner existiert)
         let _ = net(&["use", &unc, "/delete", "/y"]);
         let user = format!("/user:{}", cfg.smb_user);
+        // Das Passwort geht über stdin, nicht als Argument
         let mut child = Command::new("net")
             .args(["use", &unc, "*", &user, "/persistent:no"])
             .stdin(Stdio::piped())
@@ -214,24 +228,83 @@ mod windows {
         }
         let out = child.wait_with_output()?;
         if out.status.success() {
-            return Ok(true);
+            return Ok(Conn::New);
         }
         if already_connected(&out) {
-            return conflicting_login(&unc);
+            return Ok(Conn::Conflict);
         }
         // Fallback: Passwort als Argument (kurzzeitig in der Prozessliste sichtbar)
         let out = net(&["use", &unc, password, &user, "/persistent:no"])?;
         if out.status.success() {
-            return Ok(true);
+            return Ok(Conn::New);
         }
         if already_connected(&out) {
-            return conflicting_login(&unc);
+            return Ok(Conn::Conflict);
         }
         bail!("SMB-Verbindung fehlgeschlagen: {}", text(&out).trim());
     }
 
+    /// Weitere Namen für denselben Server. Windows merkt sich Anmeldungen je Servername und nicht
+    /// je Rechner: Unter einem anderen Namen (z. B. `nas.local` statt `192.168.178.5`) ist deshalb
+    /// ein anderer Benutzer möglich, auch wenn schon Netzlaufwerke mit einem anderen Benutzer bestehen.
+    fn aliases(host: &str) -> Vec<String> {
+        use std::net::ToSocketAddrs;
+        if host.parse::<std::net::IpAddr>().is_ok() {
+            let mut c = Command::new("powershell");
+            c.args(["-NoProfile", "-NonInteractive", "-Command", &format!("try {{ [System.Net.Dns]::GetHostEntry('{host}').HostName }} catch {{}}")]);
+            let out = c.creation_flags(0x0800_0000).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+            alias_names(host, &out)
+        } else {
+            let ips = (host, 445).to_socket_addrs().map(|a| a.filter(|s| s.is_ipv4()).map(|s| s.ip().to_string()).collect::<Vec<_>>()).unwrap_or_default();
+            let mut v: Vec<String> = vec![];
+            for ip in ips {
+                if !v.contains(&ip) {
+                    v.push(ip);
+                }
+            }
+            v
+        }
+    }
+
+    /// Aus dem per Reverse-DNS gefundenen Namen: voller und kurzer Name, ohne die Adresse selbst.
+    pub(super) fn alias_names(host: &str, reverse: &str) -> Vec<String> {
+        let reverse = reverse.trim().trim_end_matches('.');
+        let mut v: Vec<String> = vec![];
+        for n in [reverse, reverse.split('.').next().unwrap_or("")] {
+            if !n.is_empty() && !n.eq_ignore_ascii_case(host) && !v.iter().any(|x| x.eq_ignore_ascii_case(n)) {
+                v.push(n.to_string());
+            }
+        }
+        v
+    }
+
+    /// Verbindet die Freigabe. Liefert `true`, wenn die App die Verbindung neu aufgebaut hat
+    /// (nur dann wird sie später wieder getrennt). Besteht schon eine Anmeldung mit anderem Benutzer
+    /// am selben Server (Fehler 1219), wird die Freigabe unter einem Alias-Namen des Servers verbunden.
+    pub fn mount(cfg: &Config, password: &str) -> Result<bool> {
+        match connect(&cfg.host, cfg, password)? {
+            Conn::Existing => return Ok(false),
+            Conn::New => return Ok(true),
+            Conn::Conflict => {}
+        }
+        for alias in aliases(&cfg.host) {
+            match connect(&alias, cfg, password) {
+                Ok(Conn::Existing) => {
+                    set_host(&alias);
+                    return Ok(false);
+                }
+                Ok(Conn::New) => {
+                    set_host(&alias);
+                    return Ok(true);
+                }
+                Ok(Conn::Conflict) | Err(_) => {}
+            }
+        }
+        bail!("Windows ist mit diesem NAS bereits unter einem anderen Benutzer verbunden (z. B. über ein Netzlaufwerk), und es wurde kein zweiter Servername gefunden. In den Einstellungen statt der IP-Adresse den Namen des NAS eintragen (oder umgekehrt), damit Windows eine eigene Anmeldung erlaubt.");
+    }
+
     pub fn unmount(cfg: &Config) -> Result<()> {
-        let unc = format!(r"\\{}\{}", cfg.host, cfg.share);
+        let unc = format!(r"\{}\{}", host(cfg), cfg.share);
         net(&["use", &unc, "/delete", "/y"]).map(|_| ())
     }
 }
@@ -245,5 +318,14 @@ mod tests {
         let o = "Filesystem 1024-blocks Used Available Capacity Mounted on\n//nas/share 1000 400 600 40% /mnt\n";
         assert_eq!(parse_df(o), Some(600 * 1024));
         assert_eq!(parse_df("leer"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn alias_names_from_reverse_dns() {
+        use super::windows::alias_names;
+        assert_eq!(alias_names("192.168.178.128", "Ugreen-NAS.local\r\n"), ["Ugreen-NAS.local", "Ugreen-NAS"]);
+        assert_eq!(alias_names("nas", "nas"), Vec::<String>::new());
+        assert_eq!(alias_names("10.0.0.1", ""), Vec::<String>::new());
     }
 }
