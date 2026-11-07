@@ -4,6 +4,7 @@
 
 ### Geändert
 - Windows-Installer: Eine laufende Instanz der App (Fenster, Tray oder Zeitplan-Lauf) wird vor dem Update bzw. der Deinstallation automatisch beendet.
+- „Übliche Ausschlüsse“ ist deutlich erweitert (Windows und Linux): weitere Browser-, Electron-, GPU- und Shader-Caches (NVIDIA, Brave, Edge, Chrome, Firefox, Discord, VS Code), Windows-Update- und WebCache-Ordner, `AppData\Local\Programs`, Paket-Caches (pip, NuGet, Maven, rustup), Spiele-Daten (Fortnite, Steam) sowie unter Linux Flatpak, Container, Steam und Systemordner wie `/proc` und `/tmp`. So wird weniger Unnötiges gesichert, und das Backup dauert kürzer.
 
 ## [0.3.13]
 
