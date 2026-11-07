@@ -166,7 +166,8 @@ pub struct BackupOptions<'a> {
 }
 
 pub fn backup_args(o: &BackupOptions) -> Vec<String> {
-    let mut a = vec!["backup".to_string(), "--json".into()];
+    // Mehr parallele Dateilesevorgänge beschleunigen das Einlesen vieler kleiner Dateien (restic ≥ 0.13)
+    let mut a = vec!["backup".to_string(), "--json".into(), "--read-concurrency".into(), "4".into()];
     if !o.host.is_empty() {
         a.extend(["--host".into(), o.host.into()]);
     }
@@ -187,8 +188,12 @@ pub fn backup_args(o: &BackupOptions) -> Vec<String> {
 }
 
 /// `host`: nur Snapshots dieses Rechners aufräumen (wichtig bei geteilten Repos).
-pub fn forget_args(daily: u32, weekly: u32, monthly: u32, host: &str) -> Vec<String> {
-    let mut a = vec!["forget".to_string(), "--prune".into()];
+/// `prune`: zusätzlich ungenutzte Daten entfernen (langsam über SMB, daher nur gelegentlich).
+pub fn forget_args(daily: u32, weekly: u32, monthly: u32, host: &str, prune: bool) -> Vec<String> {
+    let mut a = vec!["forget".to_string()];
+    if prune {
+        a.extend(["--prune".into(), "--max-unused".into(), "10%".into()]);
+    }
     if !host.is_empty() {
         a.extend(["--host".into(), host.into()]);
     }
@@ -208,6 +213,11 @@ impl Restic {
             .env("RESTIC_REPOSITORY", &self.repo)
             .env("RESTIC_PASSWORD", &self.password)
             .stdin(Stdio::null());
+        // Fester Cache im Datenverzeichnis: GUI und Zeitplan (evtl. anderes Konto) nutzen denselben Cache,
+        // sonst liest restic die Metadaten bei jedem Lauf neu über SMB
+        if let Ok(d) = crate::config::data_dir() {
+            c.env("RESTIC_CACHE_DIR", d.join("restic-cache"));
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -277,11 +287,11 @@ impl Restic {
         self.run(&a).map(|_| ())
     }
 
-    pub fn forget(&self, daily: u32, weekly: u32, monthly: u32, host: &str) -> Result<()> {
+    pub fn forget(&self, daily: u32, weekly: u32, monthly: u32, host: &str, prune: bool) -> Result<()> {
         if daily + weekly + monthly == 0 {
             bail!("Keine Aufbewahrungsregel gesetzt – forget würde nichts behalten");
         }
-        self.run(&forget_args(daily, weekly, monthly, host)).map(|_| ())
+        self.run(&forget_args(daily, weekly, monthly, host, prune)).map(|_| ())
     }
 
     pub fn stats(&self) -> Result<RepoStats> {
@@ -295,7 +305,7 @@ impl Restic {
 
     /// Prüft die Struktur und liest einen Teil der Daten (`--read-data-subset=N%`).
     pub fn check_subset(&self, percent: u32) -> Result<()> {
-        self.run(&["check".into(), format!("--read-data-subset={percent}%")]).map(|_| ())
+        self.run(&["check".into(), "--with-cache".into(), format!("--read-data-subset={percent}%")]).map(|_| ())
     }
 
     pub fn check(&self) -> Result<()> {
@@ -405,8 +415,8 @@ mod tests {
 
     #[test]
     fn forget_skips_zero() {
-        assert_eq!(forget_args(7, 0, 6, ""), ["forget", "--prune", "--keep-daily", "7", "--keep-monthly", "6"]);
-        assert_eq!(forget_args(1, 0, 0, "pc"), ["forget", "--prune", "--host", "pc", "--keep-daily", "1"]);
+        assert_eq!(forget_args(7, 0, 6, "", false), ["forget", "--keep-daily", "7", "--keep-monthly", "6"]);
+        assert_eq!(forget_args(1, 0, 0, "pc", true), ["forget", "--prune", "--max-unused", "10%", "--host", "pc", "--keep-daily", "1"]);
     }
 
     #[test]
@@ -424,7 +434,7 @@ mod tests {
         });
         assert_eq!(
             a,
-            ["backup", "--json", "--host", "pc", "--exclude", "*.tmp", "--exclude-caches", "--exclude-if-present", ".nobackup", "--exclude-larger-than", "500M", "/data"]
+            ["backup", "--json", "--read-concurrency", "4", "--host", "pc", "--exclude", "*.tmp", "--exclude-caches", "--exclude-if-present", ".nobackup", "--exclude-larger-than", "500M", "/data"]
         );
     }
 
@@ -544,7 +554,7 @@ mod tests {
         }
         let restored = restored.join("a.txt");
         assert_eq!(std::fs::read_to_string(restored).unwrap(), "hallo");
-        r.forget(1, 0, 0, "").unwrap();
+        r.forget(1, 0, 0, "", true).unwrap();
         r.check().unwrap();
     }
 }

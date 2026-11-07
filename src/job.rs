@@ -158,9 +158,24 @@ pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log
         // Der Snapshot ist schon geschrieben: scheitert nur das Aufräumen (z. B. Repo von einem anderen Rechner
         // gesperrt), ist das eine Warnung. Als Fehler würde der Zeitplan alle 30 Minuten neu sichern.
         log("Räume alte Snapshots auf …".into());
-        if let Err(e) = r.forget(cfg.keep_daily, cfg.keep_weekly, cfg.keep_monthly, &host) {
-            log(format!("Warnung: Aufräumen fehlgeschlagen: {e:#}"));
+        // Prune (Index und Trees über SMB lesen, Packs umschreiben) ist langsam: nur alle paar Tage
+        if host.is_empty() {
+            // Ohne Rechnernamen würde forget die Snapshots aller Rechner im Repo ausdünnen
+            log("Warnung: Rechnername unbekannt – Aufräumen übersprungen".into());
             outcome.warnings = true;
+            return Ok(outcome);
+        }
+        let prune = crate::config::prune_due(crate::config::read_last_prune().as_ref(), chrono::Local::now().naive_local());
+        match r.forget(cfg.keep_daily, cfg.keep_weekly, cfg.keep_monthly, &host, prune) {
+            Ok(()) => {
+                if prune {
+                    crate::config::write_last_prune();
+                }
+            }
+            Err(e) => {
+                log(format!("Warnung: Aufräumen fehlgeschlagen: {e:#}"));
+                outcome.warnings = true;
+            }
         }
         // Regelmäßige Teilprüfung nur im Zeitplan-Lauf; ein Fehler dort ist eine Warnung, kein Backup-Fehler
         if !keep_mounted && crate::config::check_due(crate::config::read_last_check().as_ref(), cfg.check_interval_days, chrono::Local::now().naive_local()) {
@@ -221,7 +236,7 @@ mod tests {
         assert_eq!(snaps.len(), 2);
         assert!(snaps.iter().all(|s| s.paths.len() == 1));
         // Aufbewahrung gilt je Ordner: beide Snapshots bleiben erhalten
-        r.forget(1, 0, 0, "testhost").unwrap();
+        r.forget(1, 0, 0, "testhost", true).unwrap();
         assert_eq!(r.snapshots().unwrap().len(), 2);
     }
 
