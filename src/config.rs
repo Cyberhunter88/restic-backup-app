@@ -222,6 +222,11 @@ pub fn read_last_success() -> Option<chrono::NaiveDateTime> {
     read_ts("last-success.txt")
 }
 
+/// Zeitpunkt des letzten fehlgeschlagenen Backups (der Zeitplan wartet danach eine Weile).
+pub fn read_last_failure() -> Option<chrono::NaiveDateTime> {
+    read_ts("last-failure.txt")
+}
+
 /// Bis wann der Zeitplan pausiert ist (falls gesetzt).
 pub fn read_pause() -> Option<chrono::NaiveDateTime> {
     read_ts("pause-until.txt")
@@ -318,9 +323,7 @@ pub fn read_history(n: usize) -> Vec<HistoryEntry> {
 /// Schreibt das Protokoll des letzten Laufs (Zeitplan oder GUI) in `last-run.log` und ergänzt den Verlauf.
 pub fn write_last_run(ok: bool, lines: &[String]) -> Result<()> {
     let _ = append_history(ok, lines);
-    if ok {
-        write_ts("last-success.txt", now());
-    }
+    write_ts(if ok { "last-success.txt" } else { "last-failure.txt" }, now());
     let p = last_run_path()?;
     std::fs::create_dir_all(p.parent().unwrap())?;
     let head = format!("{} – {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), if ok { "ERFOLGREICH" } else { "FEHLER" });

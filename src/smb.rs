@@ -180,14 +180,27 @@ mod windows {
         text(o).contains("1219")
     }
 
+    /// Fehler 1219: Windows erlaubt je NAS nur eine Anmeldung gleichzeitig. Ist die Freigabe trotzdem
+    /// zugreifbar, ist alles gut; sonst ein verständlicher Fehler statt eines späten restic-Fehlers.
+    fn conflicting_login(unc: &str) -> Result<bool> {
+        if std::fs::read_dir(unc).is_ok() {
+            return Ok(false);
+        }
+        bail!("Windows ist mit diesem NAS bereits unter einem anderen Benutzer verbunden (z. B. über ein Netzlaufwerk) und erlaubt nur eine Anmeldung. Die Verbindungen zum NAS trennen (`net use * /delete`) oder für alle Freigaben denselben Benutzer verwenden.");
+    }
+
     /// Verbindet die Freigabe. Das Passwort wird über stdin übergeben (nicht als Argument).
     /// Liefert `true`, wenn die App die Verbindung neu aufgebaut hat.
     pub fn mount(cfg: &Config, password: &str) -> Result<bool> {
         let unc = format!(r"\\{}\{}", cfg.host, cfg.share);
-        // Bereits verbunden (z. B. durch den Nutzer)? Dann nichts anfassen und später nicht trennen.
-        if net(&["use", &unc]).map(|o| o.status.success()).unwrap_or(false) {
+        // Schon zugreifbar (z. B. vom Nutzer verbunden)? Dann nichts anfassen und später nicht trennen.
+        // Echter Zugriffstest statt `net use`: ein „getrennter“ Eintrag mit falschen Anmeldedaten
+        // meldete sonst Erfolg, und erst restic scheiterte mit „Benutzername oder Kennwort falsch“.
+        if std::fs::read_dir(&unc).is_ok() {
             return Ok(false);
         }
+        // Veralteten Eintrag für genau diese Freigabe entfernen (Fehler egal, falls keiner existiert)
+        let _ = net(&["use", &unc, "/delete", "/y"]);
         let user = format!("/user:{}", cfg.smb_user);
         let mut child = Command::new("net")
             .args(["use", &unc, "*", &user, "/persistent:no"])
@@ -204,7 +217,7 @@ mod windows {
             return Ok(true);
         }
         if already_connected(&out) {
-            return Ok(false);
+            return conflicting_login(&unc);
         }
         // Fallback: Passwort als Argument (kurzzeitig in der Prozessliste sichtbar)
         let out = net(&["use", &unc, password, &user, "/persistent:no"])?;
@@ -212,7 +225,7 @@ mod windows {
             return Ok(true);
         }
         if already_connected(&out) {
-            return Ok(false);
+            return conflicting_login(&unc);
         }
         bail!("SMB-Verbindung fehlgeschlagen: {}", text(&out).trim());
     }

@@ -166,6 +166,13 @@ impl App {
             status: String::new(),
             cancel: Arc::new(AtomicBool::new(false)),
         };
+        // Veralteten Zeitplan (nach Programm-Aktualisierung) still erneuern
+        {
+            let (times, days, opts) = (app.cfg.schedule_times.clone(), app.cfg.schedule_days, schedule::Options { only_on_ac: app.cfg.only_on_ac });
+            std::thread::spawn(move || {
+                let _ = schedule::refresh_if_outdated(&times, &days, opts);
+            });
+        }
         // Höchstens einmal täglich nach einer neuen Version suchen
         let due = crate::config::read_update_check().is_none_or(|t| chrono::Local::now().naive_local().signed_duration_since(t).num_hours() >= 24);
         if app.cfg.check_updates && due {
@@ -1044,7 +1051,7 @@ impl App {
                     ui,
                     "hint_catchup",
                     "Änderungen gelten erst nach „Zeitplan aktivieren“. Verpasste Läufe werden nachgeholt.",
-                    "Der Zeitplan startet das Programm zu den Uhrzeiten, bei der Anmeldung, beim Entsperren und alle 30 Minuten; gesichert wird nur, wenn seit dem letzten geplanten Termin noch kein Backup gelang. War der Laptop aus, wird also einmal nachgeholt (auch nach Tagen). Ist das NAS nicht erreichbar (z. B. unterwegs), wird der Lauf still übersprungen und später erneut versucht – ohne Fehler im Protokoll. Nach einer Programm-Aktualisierung den Zeitplan einmal neu aktivieren.",
+                    "Der Zeitplan startet das Programm zu den Uhrzeiten, bei der Anmeldung, beim Entsperren und alle 30 Minuten; gesichert wird nur, wenn seit dem letzten geplanten Termin noch kein Backup gelang. War der Laptop aus, wird also einmal nachgeholt (auch nach Tagen). Ist das NAS nicht erreichbar (z. B. unterwegs), wird der Lauf still übersprungen und später erneut versucht – ohne Fehler im Protokoll. Schlägt ein Lauf fehl, wartet der Zeitplan zwei Stunden bis zum nächsten Versuch. Nach einer Programm-Aktualisierung wird der Zeitplan beim Start der App automatisch erneuert.",
                 );
                 #[cfg(windows)]
                 ui::hint(ui, "Der Taskplaner-Task läuft unter deinem Benutzer und nutzt die Freigabe direkt per UNC-Pfad.");

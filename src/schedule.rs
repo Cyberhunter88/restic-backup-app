@@ -100,10 +100,23 @@ pub fn install(times: &[String], days: &[bool; 7], opts: Options) -> Result<()> 
     let dir = directories::BaseDirs::new().context("Kein Home")?.config_dir().join("systemd/user");
     std::fs::create_dir_all(&dir)?;
     let (service, timer) = systemd_units(&exe, &calendar, opts);
+    let stamp = format!("{service}\n{timer}");
     std::fs::write(dir.join("restic-backup-app.service"), service)?;
     std::fs::write(dir.join("restic-backup-app.timer"), timer)?;
     run("systemctl", &["--user", "daemon-reload"])?;
-    run("systemctl", &["--user", "enable", "--now", "restic-backup-app.timer"])
+    run("systemctl", &["--user", "enable", "--now", "restic-backup-app.timer"])?;
+    write_stamp(&stamp)
+}
+
+#[cfg(unix)]
+fn is_installed() -> bool {
+    directories::BaseDirs::new().is_some_and(|d| d.config_dir().join("systemd/user/restic-backup-app.timer").exists())
+}
+
+#[cfg(unix)]
+fn current_stamp(times: &[String], days: &[bool; 7], opts: Options) -> Result<String> {
+    let (service, timer) = systemd_units(&exe_path()?, &calendar_lines(times, days)?.join("\n"), opts);
+    Ok(format!("{service}\n{timer}"))
 }
 
 #[cfg(unix)]
@@ -149,7 +162,18 @@ pub fn install(times: &[String], days: &[bool; 7], opts: Options) -> Result<()> 
     let parsed = parsed_times(times)?;
     let script = windows_script(&exe_path()?.display().to_string(), &parsed, days, opts);
     remove().ok();
-    run("powershell", &["-NoProfile", "-NonInteractive", "-Command", &script])
+    run("powershell", &["-NoProfile", "-NonInteractive", "-Command", &script])?;
+    write_stamp(&script)
+}
+
+#[cfg(windows)]
+fn is_installed() -> bool {
+    run("powershell", &["-NoProfile", "-NonInteractive", "-Command", "if (Get-ScheduledTask -TaskName 'restic-backup-app' -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"]).is_ok()
+}
+
+#[cfg(windows)]
+fn current_stamp(times: &[String], days: &[bool; 7], opts: Options) -> Result<String> {
+    Ok(windows_script(&exe_path()?.display().to_string(), &parsed_times(times)?, days, opts))
 }
 
 #[cfg(windows)]
@@ -164,6 +188,32 @@ pub fn remove() -> Result<()> {
             "foreach ($n in @('restic-backup-app') + (1..24 | ForEach-Object { \"restic-backup-app-$_\" })) { Unregister-ScheduledTask -TaskName $n -Confirm:$false -ErrorAction SilentlyContinue }; exit 0",
         ],
     )
+}
+
+fn stamp_path() -> Result<std::path::PathBuf> {
+    Ok(crate::config::data_dir()?.join("schedule-stamp.txt"))
+}
+
+fn write_stamp(stamp: &str) -> Result<()> {
+    let p = stamp_path()?;
+    std::fs::create_dir_all(p.parent().context("Kein Datenverzeichnis")?)?;
+    std::fs::write(p, stamp)?;
+    Ok(())
+}
+
+/// Ist der Zeitplan eingerichtet, aber mit einer anderen Programmversion bzw. einem anderen Pfad
+/// angelegt als dem aktuellen? Dann neu einrichten, damit nach einer Aktualisierung (oder einem
+/// Verschieben der Datei) nicht der alte Task weiterläuft. Liefert `true`, wenn erneuert wurde.
+pub fn refresh_if_outdated(times: &[String], days: &[bool; 7], opts: Options) -> Result<bool> {
+    if !is_installed() {
+        return Ok(false);
+    }
+    let want = current_stamp(times, days, opts)?;
+    if std::fs::read_to_string(stamp_path()?).is_ok_and(|have| have == want) {
+        return Ok(false);
+    }
+    install(times, days, opts)?;
+    Ok(true)
 }
 
 fn run(cmd: &str, args: &[&str]) -> Result<()> {
