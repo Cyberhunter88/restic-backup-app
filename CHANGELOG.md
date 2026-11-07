@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unveröffentlicht]
+
+### Geändert
+- Backups laufen deutlich schneller: Das Aufräumen alter Snapshots (`forget`) läuft weiter bei jedem Lauf, das langsame `--prune` (liest über SMB den ganzen Index) aber nur noch alle 7 Tage und mit `--max-unused 10%`.
+- Die Teilprüfung (`restic check`) nutzt jetzt den lokalen Cache und muss die Metadaten nicht mehr jedes Mal neu über SMB laden.
+- restic nutzt einen festen Cache im Datenverzeichnis (`restic-cache`), den GUI und Zeitplan gemeinsam verwenden.
+- Das Backup liest mit `--read-concurrency 4` mehr Dateien parallel ein.
+- Neue Einstellungen starten mit „Cache-Ordner ausschließen“ (`--exclude-caches`) aktiv.
+
+### Behoben
+- Ist der Rechnername unbekannt, wird das Aufräumen übersprungen statt die Snapshots anderer Rechner im Repo auszudünnen.
+
 ## [0.3.11]
 
 ### Geändert

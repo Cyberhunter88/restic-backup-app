@@ -56,7 +56,7 @@ impl Default for Config {
             sources: vec![],
             separate_snapshots: false,
             excludes: vec![],
-            exclude_caches: false,
+            exclude_caches: true,
             exclude_if_present: vec![],
             exclude_larger_than: String::new(),
             allow_init: false,
@@ -186,6 +186,30 @@ fn parse_last_check(text: &str) -> Option<LastCheck> {
 /// Ist eine Prüfung fällig? Ohne bisherige Prüfung: ja (sofern aktiviert).
 pub fn check_due(last: Option<&LastCheck>, interval_days: u32, now: chrono::NaiveDateTime) -> bool {
     interval_days > 0 && last.is_none_or(|l| now.signed_duration_since(l.time).num_days() >= interval_days as i64)
+}
+
+/// Abstand in Tagen, in dem `forget` zusätzlich mit `--prune` läuft (Prune liest über SMB den ganzen Index).
+pub const PRUNE_INTERVAL_DAYS: i64 = 7;
+
+pub fn last_prune_path() -> Result<PathBuf> {
+    Ok(data_dir()?.join("last-prune.txt"))
+}
+
+pub fn write_last_prune() {
+    if let Ok(p) = last_prune_path() {
+        let _ = std::fs::create_dir_all(p.parent().unwrap());
+        let _ = std::fs::write(p, format!("{}	ok
+", chrono::Local::now().format(CHECK_FMT)));
+    }
+}
+
+pub fn read_last_prune() -> Option<LastCheck> {
+    parse_last_check(&std::fs::read_to_string(last_prune_path().ok()?).ok()?)
+}
+
+/// Ist wieder ein Prune fällig? Ohne bisherigen Prune: ja.
+pub fn prune_due(last: Option<&LastCheck>, now: chrono::NaiveDateTime) -> bool {
+    last.is_none_or(|l| now.signed_duration_since(l.time).num_days() >= PRUNE_INTERVAL_DAYS)
 }
 
 /// Zeitstempel-Dateien im Datenverzeichnis (letzter Erfolg, Pause, Hinweise …).
@@ -444,6 +468,18 @@ mod tests {
         write_atomic(&p, "neu").unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "neu");
         assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn prune_due_rules() {
+        let now = chrono::NaiveDateTime::parse_from_str("2026-11-06 12:00:00", CHECK_FMT).unwrap();
+        let alt = parse_last_check("2026-10-30 12:00:00	ok
+").unwrap();
+        let neu = parse_last_check("2026-11-05 12:00:00	ok
+").unwrap();
+        assert!(prune_due(None, now));
+        assert!(prune_due(Some(&alt), now));
+        assert!(!prune_due(Some(&neu), now));
     }
 
     #[test]
