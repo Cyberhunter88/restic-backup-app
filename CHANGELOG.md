@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unveröffentlicht]
+## [0.3.15]
 
 ### Geändert
 - Windows: Die App setzt `DISABLE_RTSS_LAYER=1` für sich selbst. Dadurch lädt RTSS seinen Vulkan-Layer nicht mehr in die App, und das FPS-Overlay von MSI Afterburner wird nicht mehr eingeblendet.
