@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.11]
+
+### Geändert
+- Windows: Besteht schon eine Anmeldung mit einem anderen Benutzer am selben NAS (z. B. Netzlaufwerke), verbindet die App die Backup-Freigabe unter einem zweiten Servernamen (Reverse-DNS-Name bzw. IP), den Windows als eigenen Server behandelt. Netzlaufwerke mit anderen Benutzern und das Backup stören sich so nicht mehr.
+
 ## [0.3.10]
 
 ### Behoben
