@@ -1,6 +1,6 @@
 [package]
 name = "restic-backup-app"
-version = "0.3.15"
+version = "0.3.16"
 edition = "2024"
 description = "restic-Backup auf NAS (SMB) mit Zeitplan, Restore und Retention"
 license = "MIT"

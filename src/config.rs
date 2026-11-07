@@ -76,8 +76,8 @@ impl Default for Config {
     }
 }
 
-/// Übliche Ausschlüsse als Vorlage für die GUI (Windows und Linux; Muster ohne Treffer sind harmlos).
-pub const COMMON_EXCLUDES: &[&str] = &[
+/// Übliche Ausschlüsse für alle Systeme: Build-Artefakte, Caches, temporäre Dateien.
+const COMMON_ALL: &[&str] = &[
     // Allgemein: Build-Artefakte, Caches, temporäre Dateien
     "**/node_modules", "**/target", "**/__pycache__", "**/.pytest_cache", "**/.venv", "**/.gradle",
     "**/.cache", "*.tmp", "*.temp", "*.part", "*.crdownload", "*.swp", "~$*", "*.dmp", "**/.DS_Store",
@@ -86,6 +86,10 @@ pub const COMMON_EXCLUDES: &[&str] = &[
     // Allgemein: Browser-, Electron- und Spiele-Caches (liegen je nach System unter AppData bzw. ~/.config)
     "**/Code Cache", "**/GPUCache", "**/ShaderCache", "**/DawnGraphiteCache", "**/DawnWebGPUCache", "**/Service Worker/CacheStorage",
     "**/GrShaderCache", "**/Crashpad", "**/DXCache", "**/GLCache",
+];
+
+/// Übliche Ausschlüsse nur für Windows (System-Dateien, AppData).
+const COMMON_WINDOWS: &[&str] = &[
     // Windows: System- und Papierkorbdateien
     "**/$RECYCLE.BIN", "**/System Volume Information", "**/pagefile.sys", "**/swapfile.sys", "**/hiberfil.sys",
     "**/Thumbs.db", "**/desktop.ini", "**/NTUSER.DAT*", "**/UsrClass.dat*",
@@ -104,6 +108,10 @@ pub const COMMON_EXCLUDES: &[&str] = &[
     "**/AppData/Local/FortniteGame", "**/AppData/Local/EpicGamesLauncher/Saved/webcache*", "**/AppData/Local/Steam/htmlcache",
     "**/AppData/Roaming/discord/Cache", "**/AppData/Roaming/Spotify/Storage", "**/AppData/Local/Spotify/Storage",
     "**/AppData/LocalLow/Temp", "**/scoop/cache", "**/.docker/desktop",
+];
+
+/// Übliche Ausschlüsse nur für Linux (Caches, Papierkorb, Systemordner).
+const COMMON_LINUX: &[&str] = &[
     // Linux: Caches, Papierkorb, Laufzeitdaten
     "**/.local/share/Trash", "**/.local/share/Steam", "**/.thumbnails", "**/.npm/_cacache", "**/.cargo/registry",
     "**/.config/*/Cache", "**/.config/*/Code Cache", "**/.config/*/GPUCache", "**/.mozilla/firefox/*/cache2",
@@ -113,6 +121,15 @@ pub const COMMON_EXCLUDES: &[&str] = &[
     "**/.config/chromium/*/Cache", "**/.config/discord/Cache", "**/.config/Code/CachedData", "**/.config/Code/CachedExtensionVSIXs",
     "/proc", "/sys", "/dev", "/run", "/tmp", "/var/tmp", "/var/cache", "/lost+found",
 ];
+
+/// Übliche Ausschlüsse für das System, auf dem die App läuft (allgemeine plus Windows- bzw. Linux-Muster).
+pub fn common_excludes() -> Vec<&'static str> {
+    let system = if cfg!(windows) { COMMON_WINDOWS } else { COMMON_LINUX };
+    COMMON_ALL.iter().chain(system).copied().collect()
+}
+
+/// Name des Systems für die Beschriftung des Buttons.
+pub const SYSTEM_NAME: &str = if cfg!(windows) { "Windows" } else { "Linux" };
 
 /// Zerlegt eingefügten Text (ein Muster pro Zeile) und hängt neue, nicht doppelte Muster an.
 /// Leerzeilen und Kommentarzeilen (`#`) werden übersprungen. Liefert die Anzahl hinzugefügter Muster.
@@ -445,6 +462,23 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn common_excludes_per_system() {
+        let all = common_excludes();
+        let mut seen = std::collections::HashSet::new();
+        assert!(all.iter().all(|e| seen.insert(*e)), "doppelte Muster");
+        assert!(all.contains(&"**/node_modules"));
+        if cfg!(windows) {
+            assert!(all.contains(&"**/AppData/Local/Temp"));
+            assert!(!all.contains(&"**/.local/share/Trash"));
+        } else {
+            assert!(all.contains(&"**/.local/share/Trash"));
+            assert!(!all.contains(&"**/AppData/Local/Temp"));
+        }
+        let (w, l): (std::collections::HashSet<_>, std::collections::HashSet<_>) = (COMMON_WINDOWS.iter().collect(), COMMON_LINUX.iter().collect());
+        assert!(w.is_disjoint(&l));
+    }
 
     #[test]
     fn add_excludes_splits_lines_and_dedups() {

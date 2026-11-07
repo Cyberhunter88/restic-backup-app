@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.16]
+
+### Geändert
+- „Übliche Ausschlüsse“ unterscheidet jetzt zwischen Windows und Linux und wählt automatisch die Muster für das System, auf dem die App läuft (plus allgemeine Muster wie `node_modules`). Der Button zeigt das System an, z. B. „Übliche Ausschlüsse (Windows)“.
+
 ## [0.3.15]
 
 ### Geändert
