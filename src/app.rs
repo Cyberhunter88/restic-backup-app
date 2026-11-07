@@ -855,8 +855,8 @@ impl App {
                         crate::config::add_excludes(&mut self.cfg.excludes, &self.new_exclude);
                         self.new_exclude.clear();
                     }
-                    if ui.button("Übliche Ausschlüsse").clicked() {
-                        crate::config::add_excludes(&mut self.cfg.excludes, &crate::config::COMMON_EXCLUDES.join("\n"));
+                    if ui.button(format!("Übliche Ausschlüsse ({})", crate::config::SYSTEM_NAME)).clicked() {
+                        crate::config::add_excludes(&mut self.cfg.excludes, &crate::config::common_excludes().join("\n"));
                     }
                 });
                 ui.separator();
