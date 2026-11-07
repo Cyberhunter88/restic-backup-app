@@ -61,6 +61,14 @@ fn main() -> anyhow::Result<()> {
     if cli.run_backup {
         return run_headless(false);
     }
+    // Die App ist kein Spiel: RTSS (MSI Afterburner) hängt seinen Vulkan-Layer sonst in jede Vulkan-
+    // Anwendung und blendet das FPS-Overlay ein. Der Layer unterstützt dafür diese Variable. Sie muss
+    // vor dem Anlegen der Vulkan-Instanz und vor dem Start weiterer Threads gesetzt werden.
+    #[cfg(windows)]
+    // SAFETY: läuft ganz am Anfang von `main`, bevor die App weitere Threads startet.
+    unsafe {
+        std::env::set_var("DISABLE_RTSS_LAYER", "1");
+    }
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../packaging/icon.png")).ok();
     let mut viewport = eframe::egui::ViewportBuilder::default().with_inner_size([960.0, 680.0]).with_min_inner_size([760.0, 520.0]);
     if let Some(icon) = icon {
