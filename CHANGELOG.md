@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unveröffentlicht]
+
+### Geändert
+- Windows-Installer: Eine laufende Instanz der App (Fenster, Tray oder Zeitplan-Lauf) wird vor dem Update bzw. der Deinstallation automatisch beendet.
+
 ## [0.3.13]
 
 ### Behoben
