@@ -80,7 +80,12 @@ impl Default for Config {
 pub const COMMON_EXCLUDES: &[&str] = &[
     // Allgemein: Build-Artefakte, Caches, temporäre Dateien
     "**/node_modules", "**/target", "**/__pycache__", "**/.pytest_cache", "**/.venv", "**/.gradle",
-    "**/.cache", "*.tmp", "*.temp", "*.part", "*.crdownload", "*.swp", "~$*",
+    "**/.cache", "*.tmp", "*.temp", "*.part", "*.crdownload", "*.swp", "~$*", "*.dmp", "**/.DS_Store",
+    "**/.mypy_cache", "**/.ruff_cache", "**/.tox", "**/.next", "**/.terraform", "**/.nuget/packages", "**/.m2/repository",
+    "**/.rustup/toolchains", "**/.android/cache", "**/.ccache",
+    // Allgemein: Browser-, Electron- und Spiele-Caches (liegen je nach System unter AppData bzw. ~/.config)
+    "**/Code Cache", "**/GPUCache", "**/ShaderCache", "**/DawnGraphiteCache", "**/DawnWebGPUCache", "**/Service Worker/CacheStorage",
+    "**/GrShaderCache", "**/Crashpad", "**/DXCache", "**/GLCache",
     // Windows: System- und Papierkorbdateien
     "**/$RECYCLE.BIN", "**/System Volume Information", "**/pagefile.sys", "**/swapfile.sys", "**/hiberfil.sys",
     "**/Thumbs.db", "**/desktop.ini", "**/NTUSER.DAT*", "**/UsrClass.dat*",
@@ -89,11 +94,24 @@ pub const COMMON_EXCLUDES: &[&str] = &[
     "**/AppData/Local/Microsoft/WindowsApps", "**/AppData/Local/Packages", "**/AppData/Local/CrashDumps",
     "**/AppData/Local/D3DSCache", "**/AppData/Local/pip/cache", "**/AppData/Local/npm-cache",
     "**/AppData/Local/Google/Chrome/User Data/*/Cache", "**/AppData/Local/Microsoft/Edge/User Data/*/Cache",
-    "**/AppData/Roaming/Code/Cache*", "**/AppData/Roaming/Code/CachedData",
+    "**/AppData/Roaming/Code/Cache*", "**/AppData/Roaming/Code/CachedData", "**/AppData/Roaming/Code/CachedExtensionVSIXs",
+    "**/AppData/Local/Microsoft/Windows/WebCache", "**/AppData/Local/Microsoft/Windows/Temporary Internet Files",
+    "**/AppData/Local/Microsoft/Windows/Caches", "**/AppData/Local/Microsoft/Windows/DeliveryOptimization",
+    "**/AppData/Local/Microsoft/CLR_v4.0*", "**/AppData/Local/Microsoft/Edge/User Data/*/Code Cache",
+    "**/AppData/Local/BraveSoftware/*/User Data/*/Cache", "**/AppData/Local/Mozilla/Firefox/Profiles/*/cache2",
+    "**/AppData/Local/NVIDIA", "**/AppData/Roaming/NVIDIA/ComputeCache", "**/AppData/Local/AMD/DxCache",
+    "**/AppData/Local/pip", "**/AppData/Local/NuGet", "**/AppData/Local/Programs", "**/AppData/Local/*-updater",
+    "**/AppData/Local/FortniteGame", "**/AppData/Local/EpicGamesLauncher/Saved/webcache*", "**/AppData/Local/Steam/htmlcache",
+    "**/AppData/Roaming/discord/Cache", "**/AppData/Roaming/Spotify/Storage", "**/AppData/Local/Spotify/Storage",
+    "**/AppData/LocalLow/Temp", "**/scoop/cache", "**/.docker/desktop",
     // Linux: Caches, Papierkorb, Laufzeitdaten
     "**/.local/share/Trash", "**/.local/share/Steam", "**/.thumbnails", "**/.npm/_cacache", "**/.cargo/registry",
     "**/.config/*/Cache", "**/.config/*/Code Cache", "**/.config/*/GPUCache", "**/.mozilla/firefox/*/cache2",
-    "**/.var/app/*/cache", "**/snap/*/common/.cache",
+    "**/.var/app/*/cache", "**/snap/*/common/.cache", "**/.local/share/flatpak", "**/.local/share/containers",
+    "**/.local/share/baloo", "**/.steam", "**/.wine/drive_c/windows", "**/.gvfs", "**/.dbus",
+    "**/.xsession-errors*", "**/.local/share/docker", "**/.config/google-chrome/*/Cache", "**/.config/BraveSoftware/*/*/Cache",
+    "**/.config/chromium/*/Cache", "**/.config/discord/Cache", "**/.config/Code/CachedData", "**/.config/Code/CachedExtensionVSIXs",
+    "/proc", "/sys", "/dev", "/run", "/tmp", "/var/tmp", "/var/cache", "/lost+found",
 ];
 
 /// Zerlegt eingefügten Text (ein Muster pro Zeile) und hängt neue, nicht doppelte Muster an.
