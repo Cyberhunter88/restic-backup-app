@@ -206,7 +206,7 @@ mod windows {
     }
 
     fn connect(host: &str, cfg: &Config, password: &str) -> Result<Conn> {
-        let unc = format!(r"\{host}\{}", cfg.share);
+        let unc = format!(r"\\{host}\{}", cfg.share);
         // Echter Zugriffstest statt `net use`: ein „getrennter“ Eintrag mit falschen Anmeldedaten
         // meldete sonst Erfolg, und erst restic scheiterte mit „Benutzername oder Kennwort falsch“.
         if std::fs::read_dir(&unc).is_ok() {
@@ -304,7 +304,7 @@ mod windows {
     }
 
     pub fn unmount(cfg: &Config) -> Result<()> {
-        let unc = format!(r"\{}\{}", host(cfg), cfg.share);
+        let unc = format!(r"\\{}\{}", host(cfg), cfg.share);
         net(&["use", &unc, "/delete", "/y"]).map(|_| ())
     }
 }

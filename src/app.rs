@@ -510,7 +510,7 @@ impl App {
             let title = self.log.iter().rev().find(|l| !l.starts_with("Snapshot")).cloned().unwrap_or_else(|| "Läuft …".into());
             ui::card(ui, Some(&title), |ui| {
                 ui.horizontal(|ui| {
-                    ui.add(egui::ProgressBar::new(self.progress).show_percentage().animate(true).desired_width(ui.available_width() - 110.0));
+                    ui.add(egui::ProgressBar::new(self.progress).show_percentage().desired_width(ui.available_width() - 110.0));
                     if ui.button("Abbrechen").clicked() {
                         self.cancel.store(true, Ordering::Relaxed);
                     }

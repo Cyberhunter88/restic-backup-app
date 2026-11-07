@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.13]
+
+### Behoben
+- Windows: Die SMB-Verbindung scheiterte seit 0.3.11 mit „Systemfehler 67 – Der Netzwerkname wurde nicht gefunden“, weil dem UNC-Pfad ein führender Backslash fehlte (nur einer statt zwei vor dem Servernamen).
+
+### Geändert
+- Der Fortschrittsbalken ist nicht mehr animiert und zeichnet das Fenster dadurch nicht mehr dauernd neu (weniger GPU-Last).
+
 ## [0.3.12]
 
 ### Geändert
