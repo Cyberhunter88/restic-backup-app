@@ -13,13 +13,28 @@ pub enum Decision {
     Skip(&'static str),
 }
 
-/// Reine Entscheidung ohne Seiteneffekte: Pause, Fälligkeit.
-pub fn decide(now: NaiveDateTime, cfg: &Config, last_success: Option<NaiveDateTime>, pause: Option<NaiveDateTime>) -> Result<Decision> {
+/// Nach einem fehlgeschlagenen Lauf so viele Stunden warten, bevor der Zeitplan es erneut versucht
+/// (sonst gäbe es bei dauerhaftem Fehler alle 30 Minuten einen Versuch samt Meldung und Verlaufseintrag).
+const RETRY_AFTER_FAILURE_HOURS: i64 = 2;
+
+/// Reine Entscheidung ohne Seiteneffekte: Pause, Fälligkeit, Wartezeit nach Fehler.
+pub fn decide(
+    now: NaiveDateTime,
+    cfg: &Config,
+    last_success: Option<NaiveDateTime>,
+    pause: Option<NaiveDateTime>,
+    last_failure: Option<NaiveDateTime>,
+) -> Result<Decision> {
     if config::pause_active(pause, now) {
         return Ok(Decision::Skip("Zeitplan ist pausiert"));
     }
     let slot = schedule::last_slot(now, &cfg.schedule_times, &cfg.schedule_days)?;
-    Ok(if schedule::is_due(last_success, slot) { Decision::Run } else { Decision::Skip("Kein Backup fällig") })
+    if !schedule::is_due(last_success, slot) {
+        return Ok(Decision::Skip("Kein Backup fällig"));
+    }
+    // Nur ein Fehler nach dem fälligen Termin zählt (ein älterer betraf einen früheren Termin)
+    let recent_failure = last_failure.is_some_and(|f| slot.is_some_and(|s| f >= s) && now.signed_duration_since(f).num_hours() < RETRY_AFTER_FAILURE_HOURS);
+    Ok(if recent_failure { Decision::Skip("Letzter Versuch fehlgeschlagen, neuer Versuch später") } else { Decision::Run })
 }
 
 /// Ganze Tage seit dem letzten Erfolg, wenn die Warnschwelle erreicht ist.
@@ -55,7 +70,7 @@ pub fn run() -> Result<()> {
     }
     let now = chrono::Local::now().naive_local();
     let last_success = config::read_last_success();
-    if let Decision::Skip(why) = decide(now, &cfg, last_success, config::read_pause())? {
+    if let Decision::Skip(why) = decide(now, &cfg, last_success, config::read_pause(), config::read_last_failure())? {
         println!("{why} – übersprungen.");
         return Ok(());
     }
@@ -88,16 +103,25 @@ mod tests {
     #[test]
     fn run_when_slot_missed() {
         // Laptop war aus: letzter Erfolg vor drei Tagen, jetzt Mittwoch 16:00
-        assert_eq!(decide(at(4, 16, 0), &cfg(), Some(at(1, 14, 5)), None).unwrap(), Decision::Run);
-        assert_eq!(decide(at(4, 16, 0), &cfg(), None, None).unwrap(), Decision::Run);
+        assert_eq!(decide(at(4, 16, 0), &cfg(), Some(at(1, 14, 5)), None, None).unwrap(), Decision::Run);
+        assert_eq!(decide(at(4, 16, 0), &cfg(), None, None, None).unwrap(), Decision::Run);
     }
 
     #[test]
     fn skip_when_fresh_or_paused() {
-        assert!(matches!(decide(at(4, 16, 0), &cfg(), Some(at(4, 14, 10)), None).unwrap(), Decision::Skip(_)));
+        assert!(matches!(decide(at(4, 16, 0), &cfg(), Some(at(4, 14, 10)), None, None).unwrap(), Decision::Skip(_)));
         // Pause hat Vorrang, abgelaufene Pause nicht
-        assert_eq!(decide(at(4, 16, 0), &cfg(), None, Some(at(5, 8, 0))).unwrap(), Decision::Skip("Zeitplan ist pausiert"));
-        assert_eq!(decide(at(4, 16, 0), &cfg(), None, Some(at(4, 8, 0))).unwrap(), Decision::Run);
+        assert_eq!(decide(at(4, 16, 0), &cfg(), None, Some(at(5, 8, 0)), None).unwrap(), Decision::Skip("Zeitplan ist pausiert"));
+        assert_eq!(decide(at(4, 16, 0), &cfg(), None, Some(at(4, 8, 0)), None).unwrap(), Decision::Run);
+    }
+
+    #[test]
+    fn waits_after_failure() {
+        // Fehler um 15:30 nach dem Termin 14:00: um 16:00 warten, ab 17:30 neu versuchen
+        assert!(matches!(decide(at(4, 16, 0), &cfg(), None, None, Some(at(4, 15, 30))).unwrap(), Decision::Skip(_)));
+        assert_eq!(decide(at(4, 17, 30), &cfg(), None, None, Some(at(4, 15, 30))).unwrap(), Decision::Run);
+        // Fehler vor dem fälligen Termin (früherer Termin) bremst nicht
+        assert_eq!(decide(at(4, 14, 5), &cfg(), None, None, Some(at(4, 13, 50))).unwrap(), Decision::Run);
     }
 
     #[test]

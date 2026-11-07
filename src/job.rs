@@ -136,6 +136,13 @@ pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log
     let r = if keep_mounted { open(cfg)? } else { open_with_retry(cfg, 2, std::time::Duration::from_secs(30), &mut log)? };
     let host = local_hostname();
     let result = (|| {
+        // Schneller Zugriffstest: restic würde bei verweigertem Zugriff (falsche Anmeldung) minutenlang
+        // wiederholen; ein fehlender Ordner ist dagegen Sache von `probe` bzw. „Neues Repo anlegen“.
+        if let Err(e) = std::fs::read_dir(&r.repo) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                bail!("Kein Zugriff auf das Repository ({}): {e}", r.repo);
+            }
+        }
         match r.probe() {
             RepoState::Ok => {}
             RepoState::NotFound if cfg.allow_init => {

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.10]
+
+### Behoben
+- Der Zeitplan wird beim Start der App automatisch erneuert, wenn er mit einer älteren Programmversion angelegt wurde (vorher lief nach einem Update der alte Task mit `--run-backup` und nur den Uhrzeit-Triggern weiter, bis man „Zeitplan aktivieren“ erneut drückte).
+- Windows: Ein „getrennter“ Netzwerk-Eintrag mit falschen Anmeldedaten wurde als verbunden gewertet, sodass erst restic nach rund 15 Minuten mit „Benutzername oder Kennwort falsch“ scheiterte. Jetzt gibt es einen echten Zugriffstest, veraltete Einträge werden ersetzt, und bei einer Anmeldung mit anderem Benutzer (Fehler 1219) kommt eine verständliche Meldung.
+- Nach einem fehlgeschlagenen Zeitplan-Lauf wartet der Zeitplan zwei Stunden, statt alle 30 Minuten erneut zu sichern, zu melden und den Verlauf zu füllen.
+
 ## [0.3.9]
 
 ### Behoben
