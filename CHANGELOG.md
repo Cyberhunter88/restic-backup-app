@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unveröffentlicht]
+## [0.3.12]
 
 ### Geändert
 - Backups laufen deutlich schneller: Das Aufräumen alter Snapshots (`forget`) läuft weiter bei jedem Lauf, das langsame `--prune` (liest über SMB den ganzen Index) aber nur noch alle 7 Tage und mit `--max-unused 10%`.
