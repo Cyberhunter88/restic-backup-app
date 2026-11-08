@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.22]
+
+### Hinzugefügt
+- Seitenleiste: Schaltfläche „Beenden“ beendet das Programm ganz. Bisher ließ es sich mit Tray nur über das Tray-Menü beenden, das unter manchen Linux-Desktops (z. B. KDE/Wayland) fehlt oder nicht reagiert.
+- Neue Option „Fenster schließen = in den Tray minimieren“ (Info-Tab, nur mit Tray, Standard an). Ist sie aus, beendet das Schließen des Fensters die App.
+
+### Behoben
+- „Beenden“ im Tray-Menü beendet den Prozess jetzt auch dann, wenn das versteckte Fenster den Schließen-Befehl nicht verarbeitet (nach 10 s wird er beendet).
+
 ## [0.3.21]
 
 ### Geändert

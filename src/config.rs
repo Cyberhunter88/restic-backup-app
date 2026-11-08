@@ -45,6 +45,8 @@ pub struct Config {
     pub warn_after_days: u32,
     /// Auch nach einem erfolgreichen Lauf eine Desktop-Meldung senden (sonst nur bei Warnung/Fehler)
     pub notify_success: bool,
+    /// Fenster schließen schickt die App in den Tray (nur mit Tray); sonst beendet es sie
+    pub close_to_tray: bool,
     /// Beim Start der App (höchstens einmal täglich) nach einer neuen Version suchen
     pub check_updates: bool,
     /// Alte Einstellung (nur zum Übernehmen älterer Konfigurationen)
@@ -82,6 +84,7 @@ impl Default for Config {
             only_on_ac: false,
             warn_after_days: 3,
             notify_success: false,
+            close_to_tray: true,
             check_updates: true,
             schedule_time: String::new(),
             restic_bin: default_restic_bin(),

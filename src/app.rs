@@ -218,16 +218,25 @@ impl App {
                 TrayCmd::Backup => {}
                 TrayCmd::Pause => self.set_pause(Some(ui::tomorrow_morning(chrono::Local::now().naive_local()))),
                 TrayCmd::Resume => self.set_pause(None),
-                TrayCmd::Quit => {
-                    self.quitting = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
+                TrayCmd::Quit => self.quit(ctx),
             }
         }
-        if !self.quitting && ctx.input(|i| i.viewport().close_requested()) {
+        if !self.quitting && self.cfg.close_to_tray && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
+    }
+
+    /// App wirklich beenden (nicht nur in den Tray schicken). Ein verstecktes Fenster (Wayland) verarbeitet
+    /// den Close-Befehl teils nicht; dann beendet der Notausgang nach 10 s den Prozess.
+    fn quit(&mut self, ctx: &egui::Context) {
+        self.quitting = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        ctx.request_repaint();
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            std::process::exit(0);
+        });
     }
 
     /// Pause des Zeitplans setzen (`None` = fortsetzen) und anzeigen.
@@ -1035,6 +1044,9 @@ impl App {
             });
             ui::status(ui, &self.update_msg);
             ui.checkbox(&mut self.cfg.notify_success, "Auch nach erfolgreichem Backup eine Desktop-Meldung senden");
+            if self.has_tray() {
+                ui.checkbox(&mut self.cfg.close_to_tray, "Fenster schließen = in den Tray minimieren (aus: App beenden)");
+            }
             ui.checkbox(&mut self.cfg.check_updates, "Beim Start täglich nach einer neuen Version suchen");
             ui::hint_long(ui, "hint_update", "Die Suche fragt nur die öffentliche GitHub-Release-Seite ab und sendet keine Daten.", "Update: neues Setup (Windows) bzw. .deb/AppImage (Linux) installieren – Einstellungen und Passwörter bleiben erhalten. Danach den Zeitplan einmal neu aktivieren. Die Option wird mit „Speichern“ (Einstellungen) übernommen.");
         });
@@ -1240,6 +1252,9 @@ impl App {
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                     ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).color(MUTED).size(12.5));
+                    if ui.add(egui::Button::new(RichText::new("⏻   Beenden").size(15.0)).frame(false).min_size(egui::vec2(ui.available_width(), 34.0))).on_hover_text("Programm ganz beenden (nicht in den Tray)").clicked() {
+                        self.quit(&ctx);
+                    }
                     if self.busy {
                         // Punkte statt `ui.spinner()`: der Spinner zeichnet bei jedem Frame neu (Dauer-Last für GPU/CPU)
                         let dots = (ui.input(|i| i.time) * 3.0) as usize % 4;
