@@ -68,6 +68,14 @@ pub fn describe_repo(cfg: &Config) -> Result<String> {
     })
 }
 
+/// Entfernt Repository-Sperren. Mit `remove_all` auch aktive (Läufe anderer Rechner sind dadurch nicht geschützt).
+pub fn unlock_repo(cfg: &Config, remove_all: bool) -> Result<String> {
+    // Ein Backup auf diesem Rechner darf seine Sperre nicht verlieren
+    let _lock = crate::config::RunLock::acquire()?.ok_or(AlreadyRunning)?;
+    open(cfg)?.unlock(remove_all)?;
+    Ok(if remove_all { "Alle Sperren entfernt." } else { "Veraltete Sperren entfernt." }.into())
+}
+
 /// Kennzahlen des Repos für die Übersicht.
 #[derive(Debug, Clone)]
 pub struct RepoOverview {
@@ -134,7 +142,7 @@ pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log
     log("Verbinde mit NAS …".into());
     // Zeitplan-Lauf (headless): 2 Versuche à 30 s (die Erreichbarkeit wurde vorher geprüft), GUI-Lauf: sofort melden
     let r = if keep_mounted { open(cfg)? } else { open_with_retry(cfg, 2, std::time::Duration::from_secs(30), &mut log)? };
-    let host = local_hostname();
+    let host = if cfg.backup_host.trim().is_empty() { local_hostname() } else { cfg.backup_host.trim().to_string() };
     let result = (|| {
         // Schneller Zugriffstest: restic würde bei verweigertem Zugriff (falsche Anmeldung) minutenlang
         // wiederholen; ein fehlender Ordner ist dagegen Sache von `probe` bzw. „Neues Repo anlegen“.
@@ -199,7 +207,13 @@ pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log
             log(format!("Warnung: Unmount fehlgeschlagen: {e}"));
         }
     }
-    result
+    result.map_err(|e| {
+        if format!("{e:#}").contains("locked") {
+            e.context("Das Repository ist gesperrt. Im Tab „Snapshots“ lassen sich die Sperren mit „Sperren entfernen“ löschen")
+        } else {
+            e
+        }
+    })
 }
 
 #[cfg(test)]

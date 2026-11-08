@@ -55,8 +55,11 @@ jobs:
         run: |
           cargo install cargo-deb --locked
           sudo apt-get install -y libfuse2
-          curl -fsSL -o linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          # GitHub liefert Release-Downloads gelegentlich mit 504 aus: mehrfach versuchen
+          curl -fsSL --retry 8 --retry-delay 15 --retry-all-errors -o linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           chmod +x linuxdeploy
+          # AppImage-Runtime selbst laden (das Plugin lädt sie sonst ohne Wiederholung und scheitert bei 504)
+          curl -fsSL --retry 8 --retry-delay 15 --retry-all-errors -o runtime-x86_64 https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64             && echo "LDAI_RUNTIME_FILE=$PWD/runtime-x86_64" >> "$GITHUB_ENV"             || echo "::warning::Runtime nicht ladbar, das Plugin versucht es selbst"
 
       # ---------- Windows ----------
       - name: Windows – restic und Inno Setup installieren

@@ -44,6 +44,9 @@ pub struct Config {
     #[serde(skip_serializing)]
     schedule_time: String,
     pub restic_bin: String,
+    /// Fester Rechnername für Snapshots (leer = Name des Rechners). Verhindert, dass eine Umbenennung
+    /// die Parent-Kette bricht (dann würde alles neu eingelesen) und `forget` alte Snapshots übersieht.
+    pub backup_host: String,
 }
 
 impl Default for Config {
@@ -72,6 +75,7 @@ impl Default for Config {
             check_updates: true,
             schedule_time: String::new(),
             restic_bin: default_restic_bin(),
+            backup_host: String::new(),
         }
     }
 }
@@ -233,7 +237,7 @@ pub fn last_prune_path() -> Result<PathBuf> {
 pub fn write_last_prune() {
     if let Ok(p) = last_prune_path() {
         let _ = std::fs::create_dir_all(p.parent().unwrap());
-        let _ = std::fs::write(p, format!("{}	ok
+        let _ = write_atomic(&p, &format!("{}	ok
 ", chrono::Local::now().format(CHECK_FMT)));
     }
 }
