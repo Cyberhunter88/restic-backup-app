@@ -5,4 +5,5 @@ Comment=restic-Backup auf NAS (SMB)
 Exec=restic-backup-app
 Icon=restic-backup-app
 Terminal=false
+StartupWMClass=restic-backup-app
 Categories=Utility;Archiving;

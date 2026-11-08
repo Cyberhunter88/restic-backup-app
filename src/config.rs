@@ -359,6 +359,42 @@ impl RunLock {
     }
 }
 
+/// Sperre für das Fenster: verhindert, dass die App zweimal geöffnet wird (Windows und Linux).
+/// Die OS-Dateisperre fällt weg, sobald der Prozess endet (auch bei Absturz).
+pub struct InstanceLock {
+    _file: std::fs::File,
+}
+
+impl InstanceLock {
+    /// `Ok(None)`: Die App läuft bereits.
+    pub fn acquire() -> Result<Option<Self>> {
+        let d = data_dir()?;
+        std::fs::create_dir_all(&d)?;
+        let f = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(d.join("gui.lock"))?;
+        match f.try_lock() {
+            Ok(()) => {
+                // Eine alte Anforderung (von einem früheren Start) soll das Fenster nicht gleich zeigen
+                let _ = std::fs::remove_file(d.join("show-window.flag"));
+                Ok(Some(Self { _file: f }))
+            }
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+        }
+    }
+}
+
+/// Bittet die laufende App, ihr Fenster zu zeigen (zweiter Start).
+pub fn request_show_window() {
+    if let Ok(d) = data_dir() {
+        let _ = std::fs::write(d.join("show-window.flag"), "");
+    }
+}
+
+/// Wurde das Fenster angefordert? Löscht die Anforderung.
+pub fn take_show_window_request() -> bool {
+    data_dir().is_ok_and(|d| std::fs::remove_file(d.join("show-window.flag")).is_ok())
+}
+
 /// Ein Eintrag im lokalen Verlauf.
 pub struct HistoryEntry {
     pub time: String,

@@ -274,6 +274,7 @@ impl App {
                     self.progress = percent as f32;
                     self.progress_text = if total_files == 0 { format!("{files_done} Dateien, {} verarbeitet", ui::human_bytes(bytes_done)) } else { String::new() };
                 }
+                Msg::Event(BackupEvent::FileError(_)) => {}
                 Msg::Event(BackupEvent::Summary { snapshot_id, files_new, data_added }) => {
                     self.log.push(format!("Snapshot {}: {files_new} neue Dateien, {} hinzugefügt", snapshot_id.chars().take(8).collect::<String>(), ui::human_bytes(data_added)));
                     self.progress = 1.0;
