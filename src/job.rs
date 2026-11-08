@@ -211,6 +211,12 @@ pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log
             return Ok(outcome);
         }
         let prune = crate::config::prune_due(crate::config::read_last_prune().as_ref(), chrono::Local::now().naive_local());
+        // Eine verwaiste Sperre (z. B. nach hartem Beenden eines früheren Laufs) würde das Aufräumen blockieren.
+        // `unlock` ohne `--remove-all` entfernt nur veraltete Sperren; wir halten selbst die RunLock, es läuft also
+        // kein anderer Lauf auf diesem Rechner.
+        if let Err(e) = r.unlock(false) {
+            log(format!("Hinweis: Veraltete Sperren konnten nicht entfernt werden: {e:#}"));
+        }
         match r.forget(cfg.keep_daily, cfg.keep_weekly, cfg.keep_monthly, &host, prune) {
             Ok(()) => {
                 if prune {
