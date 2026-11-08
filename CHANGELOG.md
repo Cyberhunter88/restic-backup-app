@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unveröffentlicht]
+## [0.3.21]
 
 ### Geändert
 - Linux: Der Zeitplan startet das Backup mit niedriger CPU- und Platten-Priorität (`Nice=10`, `IOSchedulingClass=idle`), der Rechner bleibt flüssig.
