@@ -1252,9 +1252,6 @@ impl App {
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                     ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).color(MUTED).size(12.5));
-                    if ui.add(egui::Button::new(RichText::new("⏻   Beenden").size(15.0)).frame(false).min_size(egui::vec2(ui.available_width(), 34.0))).on_hover_text("Programm ganz beenden (nicht in den Tray)").clicked() {
-                        self.quit(&ctx);
-                    }
                     if self.busy {
                         // Punkte statt `ui.spinner()`: der Spinner zeichnet bei jedem Frame neu (Dauer-Last für GPU/CPU)
                         let dots = (ui.input(|i| i.time) * 3.0) as usize % 4;
