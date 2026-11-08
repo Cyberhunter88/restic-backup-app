@@ -49,6 +49,14 @@ pub struct BackupOutcome {
 
 /// Rechnername, so wie restic ihn als Standard-Host verwendet.
 pub fn local_hostname() -> String {
+    // Wie restic (`os.Hostname`): der Kernel-Name. Das Programm `hostname` fehlt auf manchen Distributionen (z. B. Arch)
+    #[cfg(target_os = "linux")]
+    if let Ok(h) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
+        let h = h.trim();
+        if !h.is_empty() {
+            return h.to_string();
+        }
+    }
     let mut c = Command::new("hostname");
     #[cfg(windows)]
     {
@@ -60,6 +68,27 @@ pub fn local_hostname() -> String {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|h| !h.is_empty())
         .unwrap_or_default()
+}
+
+/// Beendet restic nach einem Abbruch. Unter Unix zuerst mit SIGINT: So räumt restic auf und entfernt seine
+/// Repository-Sperre (bei hartem Kill bliebe sie liegen und würde später `forget --prune` blockieren).
+/// Reagiert restic nicht innerhalb von 15 s, wird es hart beendet.
+fn stop_child(child: &Mutex<std::process::Child>, done: &AtomicBool) {
+    #[cfg(unix)]
+    {
+        let pid = child.lock().unwrap().id().to_string();
+        if Command::new("kill").args(["-INT", &pid]).status().is_ok_and(|s| s.success()) {
+            for _ in 0..75 {
+                if done.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = done;
+    let _ = child.lock().unwrap().kill();
 }
 
 #[derive(Debug, Clone)]
@@ -455,7 +484,7 @@ impl Restic {
                 while !done.load(Ordering::Relaxed) {
                     if cancel.load(Ordering::Relaxed) {
                         cancelled.store(true, Ordering::Relaxed);
-                        let _ = child.lock().unwrap().kill();
+                        stop_child(&child, &done);
                         break;
                     }
                     std::thread::sleep(std::time::Duration::from_millis(200));

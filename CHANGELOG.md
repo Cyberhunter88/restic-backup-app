@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unveröffentlicht]
+
+### Geändert
+- Linux: Der Zeitplan startet das Backup mit niedriger CPU- und Platten-Priorität (`Nice=10`, `IOSchedulingClass=idle`), der Rechner bleibt flüssig.
+- Abbrechen eines Backups beendet restic unter Linux zuerst sauber (SIGINT) und erst nach 15 s hart. So bleibt keine Repository-Sperre liegen, die später das Aufräumen blockiert.
+- Das Protokoll gibt bei „permission denied“ einen Tipp (Rechte korrigieren oder Pfad ausschließen).
+
+### Behoben
+- Linux: Die fstab-Zeile maskiert Leerzeichen und Sonderzeichen in Pfaden und Freigabenamen (`\040`), und die Erkennung eines eingehängten Mountpunkts versteht Tab, Zeilenumbruch und Backslash. Vorher funktionierte der automatische Mount bei solchen Pfaden nicht.
+- Linux: Pfade mit `%` oder `$` im systemd-Dienst werden maskiert, sonst startete der Zeitplan nicht.
+- Linux: Der Rechnername wird aus `/proc/sys/kernel/hostname` gelesen. Fehlt das Programm `hostname` (z. B. Arch), wurde das Aufräumen bei jedem Lauf übersprungen und als Warnung gemeldet.
+
 ## [0.3.20]
 
 ### Behoben

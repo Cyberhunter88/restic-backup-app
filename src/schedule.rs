@@ -80,13 +80,24 @@ pub fn is_due(last_success: Option<NaiveDateTime>, slot: Option<NaiveDateTime>) 
     slot.is_some_and(|s| last_success.is_none_or(|l| l < s))
 }
 
+/// Maskiert einen Pfad für `ExecStart="…"`: systemd wertet `%` (Specifier) und `$` (Variablen) aus,
+/// `\` und `"` brauchen einen Backslash.
+#[cfg_attr(windows, allow(dead_code))]
+fn systemd_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"").replace('%', "%%").replace('$', "$$")
+}
+
 /// Dienst- und Timer-Datei für systemd. Der Timer feuert zu den Uhrzeiten, beim Start der
 /// Benutzersitzung und alle 30 Minuten auf der Echtzeituhr (holt so auch das Aufwachen aus
 /// dem Ruhezustand nach); ob wirklich gesichert wird, entscheidet `--scheduled`.
 #[cfg_attr(windows, allow(dead_code))]
 fn systemd_units(exe: &std::path::Path, calendar: &str, opts: Options) -> (String, String) {
     let ac = if opts.only_on_ac { "ConditionACPower=true\n" } else { "" };
-    let service = format!("[Unit]\nDescription=restic Backup auf NAS\n{ac}\n[Service]\nType=oneshot\nExecStart=\"{}\" --scheduled\n", exe.display());
+    // Niedrige CPU- und Platten-Priorität: Das Backup soll den Rechner nicht ausbremsen
+    let service = format!(
+        "[Unit]\nDescription=restic Backup auf NAS\n{ac}\n[Service]\nType=oneshot\nNice=10\nIOSchedulingClass=idle\nExecStart=\"{}\" --scheduled\n",
+        systemd_escape(&exe.to_string_lossy())
+    );
     let timer = format!(
         "[Unit]\nDescription=Zeitplan für restic Backup (verpasste Läufe werden nachgeholt)\n\n[Timer]\n{calendar}\nOnCalendar=*:0/30\nOnStartupSec=2min\nPersistent=true\nAccuracySec=1min\nRandomizedDelaySec=30\n\n[Install]\nWantedBy=timers.target\n"
     );
@@ -309,6 +320,8 @@ mod tests {
         let (svc, timer) = systemd_units(exe, "OnCalendar=*-*-* 02:00:00", Options::default());
         assert!(svc.contains("ExecStart=\"/opt/app\" --scheduled"));
         assert!(!svc.contains("ConditionACPower"));
+        assert!(svc.contains("Nice=10") && svc.contains("IOSchedulingClass=idle"));
+        assert_eq!(systemd_escape("/opt/50%/a$b"), "/opt/50%%/a$$b");
         for want in ["OnCalendar=*-*-* 02:00:00", "OnCalendar=*:0/30", "OnStartupSec=2min", "Persistent=true"] {
             assert!(timer.contains(want), "{want}");
         }

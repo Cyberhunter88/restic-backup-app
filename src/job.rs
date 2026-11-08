@@ -147,6 +147,9 @@ fn backup_sources(r: &Restic, cfg: &Config, host: &str, cancel: &AtomicBool, mut
         if file_errors.len() > MAX_LOGGED_FILE_ERRORS {
             log(format!("… und {} weitere nicht lesbare Dateien", file_errors.len() - MAX_LOGGED_FILE_ERRORS));
         }
+        if file_errors.iter().any(|m| m.contains("permission denied")) {
+            log("Tipp: Fehlende Rechte lassen sich beheben (chmod/chown) oder der Pfad unter Einstellungen → Ausschlüsse eintragen, dann entfällt die Warnung.".into());
+        }
         match res {
             Ok(o) => outcome.warnings |= o.warnings,
             Err(e) if cancel.load(Ordering::Relaxed) => return Err(e),
