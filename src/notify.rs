@@ -8,7 +8,7 @@ pub fn message(warnings: bool, error: Option<&str>, on_success: bool) -> Option<
             let first = e.lines().next().unwrap_or(e);
             Some(("Backup fehlgeschlagen".into(), first.chars().take(200).collect()))
         }
-        (None, true) => Some(("Backup mit Warnungen".into(), "Einige Dateien oder Prüfungen hatten Probleme – Details im Protokoll.".into())),
+        (None, true) => Some(("Backup mit Warnungen".into(), "Einige Dateien waren nicht lesbar (z. B. von anderen Programmen gesperrt) oder eine Prüfung hatte Probleme – Details im Protokoll.".into())),
         (None, false) if on_success => Some(("Backup erfolgreich".into(), "Das Backup wurde ohne Probleme abgeschlossen.".into())),
         (None, false) => None,
     }
@@ -19,16 +19,44 @@ pub fn overdue_message(days: i64) -> (String, String) {
     ("Backup überfällig".into(), format!("Seit {days} Tagen ist kein Backup gelungen (NAS nicht erreichbar oder Laptop nicht am Netzteil?)."))
 }
 
+/// Kennung der App für Windows-Meldungen. Ohne eigene Kennung zeigt Windows „Windows PowerShell“ als Absender.
+#[cfg(windows)]
+const APP_ID: &str = "Cyberhuter.ResticBackup";
+
+/// Trägt die App-Kennung samt Anzeigenamen unter HKCU ein (ohne Adminrechte), damit Windows die Meldung
+/// als „restic Backup“ anzeigt. Läuft höchstens einmal je Programmstart.
+#[cfg(windows)]
+fn register_app_id() {
+    use std::os::windows::process::CommandExt;
+    static DONE: std::sync::Once = std::sync::Once::new();
+    DONE.call_once(|| {
+        let key = format!(r"HKCU\Software\Classes\AppUserModelId\{APP_ID}");
+        let _ = std::process::Command::new("reg").args(["add", &key, "/v", "DisplayName", "/t", "REG_SZ", "/d", "restic Backup", "/f"]).creation_flags(0x0800_0000).output();
+    });
+}
+
+/// Zeigt die Meldung; Fehler dabei (z. B. kein Benachrichtigungsdienst) werden ignoriert.
+fn show(title: &str, body: &str) {
+    let mut n = notify_rust::Notification::new();
+    n.appname("restic Backup").summary(title).body(body);
+    #[cfg(windows)]
+    {
+        register_app_id();
+        n.app_id(APP_ID);
+    }
+    let _ = n.show();
+}
+
 /// Meldung „überfällig“ senden; Fehler dabei werden ignoriert.
 pub fn backup_overdue(days: i64) {
     let (title, body) = overdue_message(days);
-    let _ = notify_rust::Notification::new().appname("restic Backup").summary(&title).body(&body).show();
+    show(&title, &body);
 }
 
-/// Sendet die Benachrichtigung; Fehler dabei (z. B. kein Benachrichtigungsdienst) werden ignoriert.
+/// Sendet die Benachrichtigung nach einem Lauf.
 pub fn backup_finished(warnings: bool, error: Option<&str>, on_success: bool) {
     if let Some((title, body)) = message(warnings, error, on_success) {
-        let _ = notify_rust::Notification::new().appname("restic Backup").summary(&title).body(&body).show();
+        show(&title, &body);
     }
 }
 

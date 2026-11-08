@@ -90,6 +90,9 @@ pub fn repo_overview(cfg: &Config) -> Result<RepoOverview> {
     Ok(RepoOverview { size: stats.size, snapshots: r.snapshots()?.len(), free: smb::free_space(&r.repo) })
 }
 
+/// So viele nicht lesbare Dateien je Lauf werden einzeln ins Protokoll geschrieben.
+const MAX_LOGGED_FILE_ERRORS: usize = 10;
+
 /// Eigene Ausschlüsse plus das Datenverzeichnis der App. Dort liegen der Mountpunkt des NAS (`mnt`, enthält das
 /// Repository selbst), der restic-Cache und die SMB-Zugangsdaten; liegt ein Quellordner darüber (z. B. das
 /// Home-Verzeichnis), würde sonst das Repository in sich selbst gesichert.
@@ -117,6 +120,7 @@ fn backup_sources(r: &Restic, cfg: &Config, host: &str, cancel: &AtomicBool, mut
             bail!("Backup abgebrochen");
         }
         log(if cfg.separate_snapshots { format!("Sichere {} …", group[0]) } else { "Sichere Daten …".into() });
+        let mut file_errors: Vec<String> = vec![];
         let res = r.backup(
             &BackupOptions {
                 sources: group,
@@ -131,8 +135,18 @@ fn backup_sources(r: &Restic, cfg: &Config, host: &str, cancel: &AtomicBool, mut
                 connections,
             },
             cancel,
-            &mut on_event,
+            |e| match e {
+                BackupEvent::FileError(m) => file_errors.push(m),
+                e => on_event(e),
+            },
         );
+        // Welche Dateien nicht gesichert wurden, steht sonst nirgends (der Lauf zählt nur als „Warnung“)
+        for m in file_errors.iter().take(MAX_LOGGED_FILE_ERRORS) {
+            log(format!("Nicht lesbar: {}", m.chars().take(300).collect::<String>()));
+        }
+        if file_errors.len() > MAX_LOGGED_FILE_ERRORS {
+            log(format!("… und {} weitere nicht lesbare Dateien", file_errors.len() - MAX_LOGGED_FILE_ERRORS));
+        }
         match res {
             Ok(o) => outcome.warnings |= o.warnings,
             Err(e) if cancel.load(Ordering::Relaxed) => return Err(e),

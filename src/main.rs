@@ -69,8 +69,21 @@ fn main() -> anyhow::Result<()> {
     unsafe {
         std::env::set_var("DISABLE_RTSS_LAYER", "1");
     }
+    // Nur ein Fenster: ein zweiter Start holt das laufende Fenster nach vorn und beendet sich
+    let _instance = match config::InstanceLock::acquire() {
+        Ok(Some(l)) => Some(l),
+        Ok(None) => {
+            if !cli.autostart {
+                config::request_show_window();
+            }
+            println!("restic Backup läuft bereits.");
+            return Ok(());
+        }
+        // Sperre nicht möglich (z. B. Datenordner nicht schreibbar): trotzdem starten
+        Err(_) => None,
+    };
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../packaging/icon.png")).ok();
-    let mut viewport = eframe::egui::ViewportBuilder::default().with_inner_size([960.0, 680.0]).with_min_inner_size([760.0, 520.0]);
+    let mut viewport = eframe::egui::ViewportBuilder::default().with_app_id("restic-backup-app").with_inner_size([960.0, 680.0]).with_min_inner_size([760.0, 520.0]);
     if let Some(icon) = icon {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }
@@ -80,6 +93,19 @@ fn main() -> anyhow::Result<()> {
         Box::new(|cc| {
             ui::apply_theme(&cc.egui_ctx);
             let app = app::App::new(&cc.egui_ctx);
+            // Zweiter Start meldet sich über eine Datei: Fenster zeigen (auch aus dem Tray)
+            let ctx = cc.egui_ctx.clone();
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    if config::take_show_window_request() {
+                        ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Minimized(false));
+                        ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Focus);
+                        ctx.request_repaint();
+                    }
+                }
+            });
             if cli.autostart {
                 // Mit Tray ganz verstecken, sonst minimieren
                 let cmd = if app.has_tray() { eframe::egui::ViewportCommand::Visible(false) } else { eframe::egui::ViewportCommand::Minimized(true) };

@@ -67,6 +67,29 @@ pub fn local_hostname() -> String {
 pub enum BackupEvent {
     Progress { percent: f64, files_done: u64, total_files: u64, bytes_done: u64, total_bytes: u64 },
     Summary { snapshot_id: String, files_new: u64, data_added: u64 },
+    /// Eine Datei konnte nicht gelesen werden (z. B. von einem anderen Programm gesperrt); das Backup läuft weiter
+    FileError(String),
+}
+
+/// Fehlermeldungen aus der stderr-Ausgabe von `restic backup --json` (`{"message_type":"error","error":{"message":…}}`).
+pub fn parse_backup_errors(stderr: &str) -> Vec<String> {
+    #[derive(Deserialize)]
+    struct E {
+        message_type: String,
+        #[serde(default)]
+        error: Inner,
+    }
+    #[derive(Deserialize, Default)]
+    struct Inner {
+        #[serde(default)]
+        message: String,
+    }
+    stderr
+        .lines()
+        .filter_map(|l| serde_json::from_str::<E>(l).ok())
+        .filter(|e| e.message_type == "error" && !e.error.message.is_empty())
+        .map(|e| e.error.message)
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -460,6 +483,9 @@ impl Restic {
             bail!("Backup abgebrochen");
         }
         let err = err_thread.join().unwrap_or_default();
+        for m in parse_backup_errors(&err) {
+            on_event(BackupEvent::FileError(m));
+        }
         match status.code() {
             Some(0) => Ok(BackupOutcome::default()),
             Some(3) => Ok(BackupOutcome { warnings: true }),
@@ -501,6 +527,15 @@ mod tests {
         let a = backup_args(&o);
         assert!(a.contains(&"--one-file-system".to_string()));
         assert_eq!(a.last().unwrap(), "/home/x");
+    }
+
+    #[test]
+    fn backup_errors_parsed() {
+        let e = r#"{"message_type":"error","error":{"message":"open C:\\a.lock: gesperrt"},"during":"archival","item":"x"}
+kein json
+{"message_type":"error","error":{}}
+"#;
+        assert_eq!(parse_backup_errors(e), vec![r"open C:\a.lock: gesperrt".to_string()]);
     }
 
     #[test]

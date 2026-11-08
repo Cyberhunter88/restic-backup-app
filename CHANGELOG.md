@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.19]
+
+### Geändert
+- Die App lässt sich nicht mehr zweimal öffnen (Windows und Linux). Ein zweiter Start holt das laufende Fenster nach vorn, auch aus dem Tray, und beendet sich. Der Start beim Anmelden (`--autostart`) und der Zeitplan sind davon nicht betroffen.
+
+### Behoben
+- Linux: Das Fenster-Icon (Titelleiste, Taskleiste, Alt-Tab) fehlte, weil das Fenster keine feste Kennung hatte und das System es nicht der `.desktop`-Datei zuordnen konnte. Das Fenster meldet sich jetzt als `restic-backup-app` (`app_id`, `StartupWMClass`).
+- Das Protokoll nennt jetzt, welche Dateien bei einer Warnung nicht gesichert werden konnten („Nicht lesbar: …“, die ersten 10 je Ordner). Bisher stand dort nur „Backup mit Warnungen“.
+- Windows: Desktop-Meldungen erscheinen als „restic Backup“ statt als „Windows PowerShell“.
+
 ## [0.3.18]
 
 ### Hinzugefügt
