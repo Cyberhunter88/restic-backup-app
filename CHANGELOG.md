@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.17]
+
+### Hinzugefügt
+- Snapshots-Tab: „Sperren entfernen“ führt `restic unlock` aus (nur veraltete Sperren). Mit „auch aktive“ werden alle Sperren entfernt (`--remove-all`). Läuft auf diesem Rechner gerade ein Backup, wird nichts entfernt.
+- Einstellungen: Feld „Rechnername“ für Snapshots. Ein fester Name verhindert, dass nach einer Umbenennung des Rechners das ganze Backup neu eingelesen wird (kein Parent-Snapshot) und das Aufräumen alte Snapshots übersieht. Leer = Name des Rechners wie bisher.
+
+### Behoben
+- Ein GUI-Backup, das wegen eines bereits laufenden Backups nicht startete, zählte als Fehlschlag und hielt den Zeitplan 2 Stunden zurück.
+- Liegt der letzte Erfolg in der Zukunft (Uhr zurückgestellt, Zeitzonenwechsel), blockiert das den Zeitplan nicht mehr.
+- Ein hängengebliebenes Repo-Lock führt im Protokoll zu einem Hinweis auf „Sperren entfernen“.
+- Zeitstempel der Repository-Prüfung und des Aufräumens werden atomar geschrieben.
+
 ## [0.3.16]
 
 ### Geändert

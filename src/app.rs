@@ -14,6 +14,8 @@ enum Msg {
     Log(String),
     Event(BackupEvent),
     BackupDone(Result<bool, String>),
+    /// Es läuft schon ein Backup (kein Fehlschlag, wird nicht als solcher verbucht)
+    BackupBusy(String),
     Snaps(Result<Vec<Snapshot>, String>),
     Nodes(Result<Vec<Node>, String>),
     Info(Result<String, String>),
@@ -86,6 +88,7 @@ pub struct App {
     dir: String,
     nodes: Vec<Node>,
     restore_target: String,
+    unlock_all: bool,
     restored_to: Option<String>,
     status: String,
     cancel: Arc<AtomicBool>,
@@ -162,6 +165,7 @@ impl App {
             dir: "/".into(),
             nodes: vec![],
             restore_target: String::new(),
+            unlock_all: false,
             restored_to: None,
             status: String::new(),
             cancel: Arc::new(AtomicBool::new(false)),
@@ -275,6 +279,10 @@ impl App {
                     if self.overview.is_some() {
                         self.pending_overview = true;
                     }
+                }
+                Msg::BackupBusy(m) => {
+                    self.busy = false;
+                    self.log.push(format!("FEHLER: {m}"));
                 }
                 Msg::Snaps(r) => {
                     self.busy = false;
@@ -401,6 +409,11 @@ impl App {
         self.spawn(ctx, move |tx| {
             let (t1, t2) = (tx.clone(), tx.clone());
             let r = job::run_backup(&cfg, true, &cancel, move |m| drop(t1.send(Msg::Log(m))), move |e| drop(t2.send(Msg::Event(e))));
+            // „Läuft bereits“ ist kein Fehlschlag: sonst würde der Zeitplan danach 2 Stunden pausieren
+            if r.as_ref().is_err_and(|e| e.downcast_ref::<job::AlreadyRunning>().is_some()) {
+                let _ = tx.send(Msg::BackupBusy(format!("{:#}", r.unwrap_err())));
+                return;
+            }
             let _ = tx.send(Msg::BackupDone(r.map(|o| o.warnings).map_err(|e| format!("{e:#}"))));
         });
     }
@@ -570,6 +583,21 @@ impl App {
                         let _ = tx.send(Msg::Info(r.map(|_| "Repository ist in Ordnung.".to_string()).map_err(|e| format!("{e:#}"))));
                     });
                 }
+                let all = self.unlock_all;
+                if ui
+                    .add_enabled(!self.busy, egui::Button::new("🔓  Sperren entfernen"))
+                    .on_hover_text(if all { "restic unlock --remove-all" } else { "restic unlock (nur veraltete Sperren)" })
+                    .clicked()
+                {
+                    let cfg = self.cfg.clone();
+                    self.status = "Entferne Sperren …".into();
+                    self.spawn(&ctx, move |tx| {
+                        let r = job::unlock_repo(&cfg, all);
+                        let _ = tx.send(Msg::Info(r.map_err(|e| format!("{e:#}"))));
+                    });
+                }
+                ui.checkbox(&mut self.unlock_all, "auch aktive")
+                    .on_hover_text("Entfernt ALLE Sperren, auch die eines gerade laufenden Backups (z. B. von einem anderen Rechner). Nur nutzen, wenn sicher nichts läuft.");
                 if self.busy {
                     ui.spinner();
                 }
@@ -811,6 +839,7 @@ impl App {
                     field(ui, "Unterordner", &mut self.cfg.subpath, "Ordner des restic-Repos in der Freigabe");
                     secret_field(ui, "Repo-Passwort", &mut self.repo_pw);
                     field(ui, "restic-Programm", &mut self.cfg.restic_bin, "restic");
+                    field(ui, "Rechnername", &mut self.cfg.backup_host, "leer = Name dieses Rechners (fest wählen, falls er sich ändert)");
                 });
                 ui.checkbox(&mut self.cfg.allow_init, "Neues Repo anlegen, falls keins existiert");
                 ui.horizontal(|ui| {

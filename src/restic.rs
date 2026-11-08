@@ -206,6 +206,15 @@ pub fn forget_args(daily: u32, weekly: u32, monthly: u32, host: &str, prune: boo
     a
 }
 
+/// `remove_all`: auch Sperren entfernen, die noch aktiv aussehen (nur, wenn sicher kein anderer Lauf aktiv ist).
+pub fn unlock_args(remove_all: bool) -> Vec<String> {
+    let mut a = vec!["unlock".to_string()];
+    if remove_all {
+        a.push("--remove-all".into());
+    }
+    a
+}
+
 impl Restic {
     fn cmd(&self, args: &[String]) -> Command {
         let mut c = Command::new(&self.bin);
@@ -306,6 +315,11 @@ impl Restic {
     /// Prüft die Struktur und liest einen Teil der Daten (`--read-data-subset=N%`).
     pub fn check_subset(&self, percent: u32) -> Result<()> {
         self.run(&["check".into(), "--with-cache".into(), format!("--read-data-subset={percent}%")]).map(|_| ())
+    }
+
+    /// Entfernt Repository-Sperren (`restic unlock`, mit `remove_all` auch aktive).
+    pub fn unlock(&self, remove_all: bool) -> Result<()> {
+        self.run(&unlock_args(remove_all)).map(|_| ())
     }
 
     pub fn check(&self) -> Result<()> {
@@ -417,6 +431,24 @@ mod tests {
     fn forget_skips_zero() {
         assert_eq!(forget_args(7, 0, 6, "", false), ["forget", "--keep-daily", "7", "--keep-monthly", "6"]);
         assert_eq!(forget_args(1, 0, 0, "pc", true), ["forget", "--prune", "--max-unused", "10%", "--host", "pc", "--keep-daily", "1"]);
+    }
+
+    #[test]
+    fn unlock_args_flag() {
+        assert_eq!(unlock_args(false), ["unlock"]);
+        assert_eq!(unlock_args(true), ["unlock", "--remove-all"]);
+    }
+
+    #[test]
+    fn unlock_on_clean_repo() {
+        if Command::new("restic").arg("version").output().is_err() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let r = Restic { bin: "restic".into(), repo: d.path().join("repo").to_string_lossy().into(), password: "pw".into() };
+        r.init().unwrap();
+        r.unlock(false).unwrap();
+        r.unlock(true).unwrap();
     }
 
     #[test]
