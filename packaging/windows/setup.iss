@@ -52,6 +52,12 @@ var
   Code: Integer;
 begin
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM restic-backup-app.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  // Ein laufendes Backup startet restic.exe als eigenen Prozess; er überlebt das Beenden der App und sperrt
+  // die Datei im Installationsordner ("DeleteFile schlug fehl; Code 5"). Nur die restic.exe aus {app} beenden,
+  // nicht ein anderes restic des Benutzers.
+  Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    ExpandConstant('-NoProfile -NonInteractive -Command "Get-Process restic -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -eq ''{app}\restic.exe'' } | Stop-Process -Force"'),
+    '', SW_HIDE, ewWaitUntilTerminated, Code);
   Sleep(500);
 end;
 
