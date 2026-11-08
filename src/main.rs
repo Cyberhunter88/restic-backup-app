@@ -45,7 +45,7 @@ fn run_headless(quiet_if_busy: bool) -> anyhow::Result<()> {
         Ok(o) => lines.push(if o.warnings { "Backup mit Warnungen abgeschlossen." } else { "Backup abgeschlossen." }.into()),
         Err(e) => lines.push(format!("FEHLER: {e:#}")),
     }
-    notify::backup_finished(result.as_ref().is_ok_and(|o| o.warnings), result.as_ref().err().map(|e| format!("{e:#}")).as_deref());
+    notify::backup_finished(result.as_ref().is_ok_and(|o| o.warnings), result.as_ref().err().map(|e| format!("{e:#}")).as_deref(), cfg.notify_success);
     let _ = config::write_last_run(result.is_ok(), &lines);
     for l in &lines {
         println!("{l}");

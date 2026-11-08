@@ -154,12 +154,45 @@ pub fn parse_ls(output: &str) -> Vec<Node> {
         .collect()
 }
 
+/// Suchmuster für `restic find`: ohne Platzhalter wird der Begriff in `*` gefasst (Teilstring im Namen).
+pub fn find_pattern(term: &str) -> String {
+    let t = term.trim();
+    if t.contains('*') || t.contains('?') { t.to_string() } else { format!("*{t}*") }
+}
+
+/// Ausgabe von `restic find --json`: Treffer aller Snapshots als `Node`s (Name = letzter Pfadteil), höchstens `limit`.
+pub fn parse_find(output: &str, limit: usize) -> Vec<Node> {
+    #[derive(Deserialize)]
+    struct Group {
+        #[serde(default)]
+        matches: Vec<Hit>,
+    }
+    #[derive(Deserialize)]
+    struct Hit {
+        path: String,
+        #[serde(rename = "type", default)]
+        kind: String,
+        #[serde(default)]
+        size: u64,
+    }
+    let groups: Vec<Group> = serde_json::from_str(output).unwrap_or_default();
+    groups
+        .into_iter()
+        .flat_map(|g| g.matches)
+        .take(limit)
+        .map(|h| Node { name: h.path.rsplit('/').next().unwrap_or(&h.path).to_string(), path: h.path, kind: h.kind, size: h.size })
+        .collect()
+}
+
 /// Optionen, die bestimmen, was ins Backup kommt.
 #[derive(Default, Clone)]
 pub struct BackupOptions<'a> {
     pub sources: &'a [String],
     pub excludes: &'a [String],
     pub exclude_caches: bool,
+    /// Nicht in andere Dateisysteme wechseln (`--one-file-system`): gemountete Laufwerke und Netzfreigaben
+    /// unterhalb eines Quellordners werden nicht mitgesichert
+    pub one_file_system: bool,
     pub exclude_if_present: &'a [String],
     pub exclude_larger_than: &'a str,
     /// Keine Vorabzählung der Dateien (`--no-scan`)
@@ -199,6 +232,9 @@ pub fn backup_args(o: &BackupOptions) -> Vec<String> {
     }
     if o.exclude_caches {
         a.push("--exclude-caches".into());
+    }
+    if o.one_file_system {
+        a.push("--one-file-system".into());
     }
     for f in o.exclude_if_present.iter().filter(|f| !f.trim().is_empty()) {
         a.extend(["--exclude-if-present".into(), f.trim().into()]);
@@ -322,6 +358,12 @@ impl Restic {
     pub fn ls(&self, snapshot: &str, dir: &str) -> Result<Vec<Node>> {
         let out = self.run(&["ls".into(), "--json".into(), snapshot.into(), dir.into()])?;
         Ok(parse_ls(&out))
+    }
+
+    /// Sucht Dateien und Ordner nach Namen in einem Snapshot (`restic find`, ohne Beachtung der Groß-/Kleinschreibung).
+    pub fn find(&self, snapshot: &str, term: &str, limit: usize) -> Result<Vec<Node>> {
+        let out = self.run(&["find".into(), "--json".into(), "--ignore-case".into(), "--snapshot".into(), snapshot.into(), find_pattern(term)])?;
+        Ok(parse_find(&out, limit))
     }
 
     pub fn restore(&self, snapshot: &str, target: &str, include: Option<&str>) -> Result<()> {
@@ -451,6 +493,30 @@ mod tests {
     }
 
     #[test]
+    fn one_file_system_nur_auf_wunsch() {
+        let src = vec!["/home/x".to_string()];
+        let mut o = BackupOptions { sources: &src, ..Default::default() };
+        assert!(!backup_args(&o).contains(&"--one-file-system".to_string()));
+        o.one_file_system = true;
+        let a = backup_args(&o);
+        assert!(a.contains(&"--one-file-system".to_string()));
+        assert_eq!(a.last().unwrap(), "/home/x");
+    }
+
+    #[test]
+    fn find_parsed() {
+        let o = r#"[{"hits":2,"snapshot":"abc","matches":[{"path":"/C/Users/x/a.txt","type":"file","size":5},{"path":"/C/Users/x/docs","type":"dir"}]},{"hits":1,"snapshot":"abc","matches":[{"path":"/b.txt","type":"file","size":1}]}]"#;
+        let n = parse_find(o, 10);
+        assert_eq!(n.len(), 3);
+        assert_eq!((n[0].name.as_str(), n[0].size), ("a.txt", 5));
+        assert_eq!(n[1].kind, "dir");
+        assert_eq!(parse_find(o, 2).len(), 2);
+        assert!(parse_find("kein json", 5).is_empty());
+        assert_eq!(find_pattern("  foto "), "*foto*");
+        assert_eq!(find_pattern("*.pdf"), "*.pdf");
+    }
+
+    #[test]
     fn diff_parsed() {
         let o = "{\"message_type\":\"change\",\"path\":\"/a\",\"modifier\":\"-\"}\n{\"message_type\":\"change\",\"path\":\"/b\",\"modifier\":\"+\"}\n{\"message_type\":\"statistics\"}\n";
         let d = parse_diff(o);
@@ -497,6 +563,7 @@ mod tests {
             sources: &src,
             excludes: &ex,
             exclude_caches: true,
+            one_file_system: false,
             exclude_if_present: &nb,
             exclude_larger_than: "500M",
             host: "pc",
@@ -579,7 +646,7 @@ mod tests {
         r.init().unwrap();
         let (srcs, ex, nb) = (vec![src.to_string_lossy().into_owned()], vec!["*.tmp".to_string(), "node_modules".to_string()], vec![".nobackup".to_string()]);
         r.backup(
-            &BackupOptions { sources: &srcs, excludes: &ex, exclude_caches: true, exclude_if_present: &nb, exclude_larger_than: "1M", host: "testhost", no_scan: true, pack_size_mib: 64, connections: 8 },
+            &BackupOptions { sources: &srcs, excludes: &ex, exclude_caches: true, one_file_system: false, exclude_if_present: &nb, exclude_larger_than: "1M", host: "testhost", no_scan: true, pack_size_mib: 64, connections: 8 },
             &AtomicBool::new(false),
             |_| {},
         )
