@@ -60,6 +60,8 @@ pub struct App {
     rx: Receiver<Msg>,
     busy: bool,
     progress: f32,
+    /// Text statt Balken, wenn die Gesamtmenge unbekannt ist (`--no-scan`)
+    progress_text: String,
     log: Vec<String>,
     /// Protokoll des letzten Laufs (einmal geladen statt bei jedem Frame von der Platte)
     last_run: Option<String>,
@@ -141,6 +143,7 @@ impl App {
             rx,
             busy: false,
             progress: 0.0,
+            progress_text: String::new(),
             log: vec![],
             last_run: crate::config::read_last_run(),
             history: crate::config::read_history(8),
@@ -257,7 +260,10 @@ impl App {
         while let Ok(m) = self.rx.try_recv() {
             match m {
                 Msg::Log(s) => self.log.push(s),
-                Msg::Event(BackupEvent::Progress { percent, .. }) => self.progress = percent as f32,
+                Msg::Event(BackupEvent::Progress { percent, files_done, total_files, bytes_done, .. }) => {
+                    self.progress = percent as f32;
+                    self.progress_text = if total_files == 0 { format!("{files_done} Dateien, {} verarbeitet", ui::human_bytes(bytes_done)) } else { String::new() };
+                }
                 Msg::Event(BackupEvent::Summary { snapshot_id, files_new, data_added }) => {
                     self.log.push(format!("Snapshot {}: {files_new} neue Dateien, {} hinzugefügt", snapshot_id.chars().take(8).collect::<String>(), ui::human_bytes(data_added)));
                     self.progress = 1.0;
@@ -398,6 +404,7 @@ impl App {
 
     fn start_backup(&mut self, ctx: &egui::Context) {
         self.progress = 0.0;
+        self.progress_text.clear();
         self.log.clear();
         if let Err(e) = self.cfg.validate() {
             self.log.push(format!("FEHLER: {e:#}"));
@@ -523,7 +530,13 @@ impl App {
             let title = self.log.iter().rev().find(|l| !l.starts_with("Snapshot")).cloned().unwrap_or_else(|| "Läuft …".into());
             ui::card(ui, Some(&title), |ui| {
                 ui.horizontal(|ui| {
-                    ui.add(egui::ProgressBar::new(self.progress).show_percentage().desired_width(ui.available_width() - 110.0));
+                    if self.progress_text.is_empty() {
+                        ui.add(egui::ProgressBar::new(self.progress).show_percentage().desired_width(ui.available_width() - 110.0));
+                    } else {
+                        ui.spinner();
+                        ui.label(&self.progress_text);
+                        ui.add_space((ui.available_width() - 110.0).max(0.0));
+                    }
                     if ui.button("Abbrechen").clicked() {
                         self.cancel.store(true, Ordering::Relaxed);
                     }
@@ -890,6 +903,7 @@ impl App {
                 });
                 ui.separator();
                 ui.checkbox(&mut self.cfg.exclude_caches, "Ordner mit CACHEDIR.TAG ausschließen");
+                ui.checkbox(&mut self.cfg.no_scan, "Schneller sichern: Dateien nicht vorab zählen (keine Prozentanzeige)");
                 ui.horizontal(|ui| {
                     ui.label("Dateien größer als");
                     ui.add(egui::TextEdit::singleline(&mut self.cfg.exclude_larger_than).hint_text("z. B. 500M").desired_width(90.0));
