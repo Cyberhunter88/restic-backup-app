@@ -113,6 +113,8 @@ const COMMON_WINDOWS: &[&str] = &[
     // Windows: System- und Papierkorbdateien
     "**/$RECYCLE.BIN", "**/System Volume Information", "**/pagefile.sys", "**/swapfile.sys", "**/hiberfil.sys",
     "**/Thumbs.db", "**/desktop.ini", "**/NTUSER.DAT*", "**/UsrClass.dat*",
+    // restic unterscheidet Groß- und Kleinschreibung: die Registry-Dateien heißen auf der Platte klein (ntuser.dat.LOG1)
+    "**/ntuser.dat*", "**/ntuser.ini", "**/usrclass.dat*",
     // Windows: AppData (Temp, Caches, Store-Apps, Browser-Caches)
     "**/AppData/Local/Temp", "**/AppData/Local/Microsoft/Windows/INetCache", "**/AppData/Local/Microsoft/Windows/Explorer",
     "**/AppData/Local/Microsoft/WindowsApps", "**/AppData/Local/Packages", "**/AppData/Local/CrashDumps",

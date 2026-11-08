@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unveröffentlicht]
+
+### Geändert
+- „Übliche Ausschlüsse“ (Windows) enthalten `ntuser.dat*` und `usrclass.dat*` auch klein geschrieben. restic unterscheidet Groß- und Kleinschreibung, und die gesperrten Registry-Dateien `ntuser.dat.LOG1`/`LOG2` lösten bei jedem Lauf die Warnung „Einige Dateien waren nicht lesbar“ aus. Bestehende Einstellungen ändern sich nicht: „Übliche Ausschlüsse“ einmal erneut anklicken oder `**/ntuser.dat*` eintragen.
+
 ## [0.3.23]
 
 ### Geändert
