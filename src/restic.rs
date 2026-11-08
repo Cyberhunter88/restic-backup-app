@@ -154,6 +154,36 @@ pub fn parse_ls(output: &str) -> Vec<Node> {
         .collect()
 }
 
+/// Suchmuster für `restic find`: ohne Platzhalter wird der Begriff in `*` gefasst (Teilstring im Namen).
+pub fn find_pattern(term: &str) -> String {
+    let t = term.trim();
+    if t.contains('*') || t.contains('?') { t.to_string() } else { format!("*{t}*") }
+}
+
+/// Ausgabe von `restic find --json`: Treffer aller Snapshots als `Node`s (Name = letzter Pfadteil), höchstens `limit`.
+pub fn parse_find(output: &str, limit: usize) -> Vec<Node> {
+    #[derive(Deserialize)]
+    struct Group {
+        #[serde(default)]
+        matches: Vec<Hit>,
+    }
+    #[derive(Deserialize)]
+    struct Hit {
+        path: String,
+        #[serde(rename = "type", default)]
+        kind: String,
+        #[serde(default)]
+        size: u64,
+    }
+    let groups: Vec<Group> = serde_json::from_str(output).unwrap_or_default();
+    groups
+        .into_iter()
+        .flat_map(|g| g.matches)
+        .take(limit)
+        .map(|h| Node { name: h.path.rsplit('/').next().unwrap_or(&h.path).to_string(), path: h.path, kind: h.kind, size: h.size })
+        .collect()
+}
+
 /// Optionen, die bestimmen, was ins Backup kommt.
 #[derive(Default, Clone)]
 pub struct BackupOptions<'a> {
@@ -324,6 +354,12 @@ impl Restic {
         Ok(parse_ls(&out))
     }
 
+    /// Sucht Dateien und Ordner nach Namen in einem Snapshot (`restic find`, ohne Beachtung der Groß-/Kleinschreibung).
+    pub fn find(&self, snapshot: &str, term: &str, limit: usize) -> Result<Vec<Node>> {
+        let out = self.run(&["find".into(), "--json".into(), "--ignore-case".into(), "--snapshot".into(), snapshot.into(), find_pattern(term)])?;
+        Ok(parse_find(&out, limit))
+    }
+
     pub fn restore(&self, snapshot: &str, target: &str, include: Option<&str>) -> Result<()> {
         let mut a = Self::s(&["restore", snapshot, "--target", target]);
         if let Some(i) = include {
@@ -448,6 +484,19 @@ mod tests {
         let n = parse_ls(o);
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].size, 3);
+    }
+
+    #[test]
+    fn find_parsed() {
+        let o = r#"[{"hits":2,"snapshot":"abc","matches":[{"path":"/C/Users/x/a.txt","type":"file","size":5},{"path":"/C/Users/x/docs","type":"dir"}]},{"hits":1,"snapshot":"abc","matches":[{"path":"/b.txt","type":"file","size":1}]}]"#;
+        let n = parse_find(o, 10);
+        assert_eq!(n.len(), 3);
+        assert_eq!((n[0].name.as_str(), n[0].size), ("a.txt", 5));
+        assert_eq!(n[1].kind, "dir");
+        assert_eq!(parse_find(o, 2).len(), 2);
+        assert!(parse_find("kein json", 5).is_empty());
+        assert_eq!(find_pattern("  foto "), "*foto*");
+        assert_eq!(find_pattern("*.pdf"), "*.pdf");
     }
 
     #[test]

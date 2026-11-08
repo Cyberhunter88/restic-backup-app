@@ -10,6 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::Arc;
 
+/// Höchstzahl angezeigter Treffer der Dateisuche
+const FIND_LIMIT: usize = 500;
+
 enum Msg {
     Log(String),
     Event(BackupEvent),
@@ -18,6 +21,8 @@ enum Msg {
     BackupBusy(String),
     Snaps(Result<Vec<Snapshot>, String>),
     Nodes(Result<Vec<Node>, String>),
+    /// Treffer der Dateisuche im Snapshot
+    Found(Result<Vec<Node>, String>),
     Info(Result<String, String>),
     Restored(Result<String, String>),
     RepoInfo(Result<String, String>),
@@ -89,6 +94,9 @@ pub struct App {
     selected: Option<String>,
     dir: String,
     nodes: Vec<Node>,
+    find_term: String,
+    /// Treffer der Dateisuche (`None` = normale Ordneransicht)
+    found: Option<Vec<Node>>,
     restore_target: String,
     unlock_all: bool,
     restored_to: Option<String>,
@@ -167,6 +175,8 @@ impl App {
             selected: None,
             dir: "/".into(),
             nodes: vec![],
+            find_term: String::new(),
+            found: None,
             restore_target: String::new(),
             unlock_all: false,
             restored_to: None,
@@ -271,7 +281,7 @@ impl App {
                 Msg::BackupDone(r) => {
                     self.busy = false;
                     let ok = r.is_ok();
-                    crate::notify::backup_finished(matches!(r, Ok(true)), r.as_ref().err().map(String::as_str));
+                    crate::notify::backup_finished(matches!(r, Ok(true)), r.as_ref().err().map(String::as_str), self.cfg.notify_success);
                     self.log.push(match r {
                         Ok(false) => "Backup erfolgreich.".into(),
                         Ok(true) => "Backup mit Warnungen abgeschlossen.".into(),
@@ -305,6 +315,16 @@ impl App {
                     self.busy = false;
                     match r {
                         Ok(n) => self.nodes = n,
+                        Err(e) => self.status = format!("FEHLER: {e}"),
+                    }
+                }
+                Msg::Found(r) => {
+                    self.busy = false;
+                    match r {
+                        Ok(n) => {
+                            self.status = if n.len() >= FIND_LIMIT { format!("Mehr als {FIND_LIMIT} Treffer – Suchbegriff genauer fassen.") } else { String::new() };
+                            self.found = Some(n);
+                        }
                         Err(e) => self.status = format!("FEHLER: {e}"),
                     }
                 }
@@ -533,7 +553,6 @@ impl App {
                     if self.progress_text.is_empty() {
                         ui.add(egui::ProgressBar::new(self.progress).show_percentage().desired_width(ui.available_width() - 110.0));
                     } else {
-                        ui.spinner();
                         ui.label(&self.progress_text);
                         ui.add_space((ui.available_width() - 110.0).max(0.0));
                     }
@@ -611,9 +630,6 @@ impl App {
                 }
                 ui.checkbox(&mut self.unlock_all, "auch aktive")
                     .on_hover_text("Entfernt ALLE Sperren, auch die eines gerade laufenden Backups (z. B. von einem anderen Rechner). Nur nutzen, wenn sicher nichts läuft.");
-                if self.busy {
-                    ui.spinner();
-                }
                 ui::status(ui, &self.status);
             });
             ui.horizontal(|ui| {
@@ -691,6 +707,7 @@ impl App {
             self.diff = None;
             self.diff_msg.clear();
             self.dir = "/".into();
+            self.found = None;
             self.load_dir(&ctx);
         }
         let Some(id) = self.selected.clone() else {
@@ -700,6 +717,8 @@ impl App {
 
         let mut enter = None;
         let mut restore = None;
+        let mut search = false;
+        let mut clear_search = false;
         let can_restore = !self.busy && !self.restore_target.is_empty();
         ui::card(ui, Some("Dateien im Snapshot"), |ui| {
             ui.horizontal(|ui| {
@@ -715,10 +734,37 @@ impl App {
                     }
                 });
             });
+            ui.horizontal(|ui| {
+                let r = ui.add(egui::TextEdit::singleline(&mut self.find_term).hint_text("🔍 Datei im Snapshot suchen (Name, * und ? möglich)").desired_width(340.0));
+                let enter_pressed = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (ui.add_enabled(!self.busy && !self.find_term.trim().is_empty(), egui::Button::new("Suchen")).clicked() || enter_pressed) && !self.busy && !self.find_term.trim().is_empty() {
+                    search = true;
+                }
+                if self.found.is_some() && ui.button("✖ Suche beenden").clicked() {
+                    clear_search = true;
+                }
+            });
+            if let Some(f) = &self.found {
+                ui::hint(ui, &format!("{} Treffer für „{}“ – Pfade beginnen bei Windows mit dem Laufwerksbuchstaben.", f.len(), self.find_term.trim()));
+            }
+            let searching = self.found.is_some();
+            let list: &[Node] = self.found.as_deref().unwrap_or(&self.nodes);
             egui::ScrollArea::vertical().id_salt("nodes").auto_shrink([false, false]).show(ui, |ui| {
                 egui::Grid::new("node_grid").num_columns(3).striped(true).min_col_width(90.0).show(ui, |ui| {
-                    for n in &self.nodes {
-                        if n.kind == "dir" {
+                    for n in list {
+                        if searching {
+                            // Treffer: voller Pfad, Ordner lassen sich öffnen
+                            if n.kind == "dir" {
+                                if ui.add_enabled(!self.busy, egui::Button::new(format!("📁 {}", n.path)).frame(false)).clicked() {
+                                    enter = Some(n.path.clone());
+                                    clear_search = true;
+                                }
+                                ui.label("");
+                            } else {
+                                ui.label(&n.path);
+                                ui.label(RichText::new(ui::human_bytes(n.size)).color(MUTED));
+                            }
+                        } else if n.kind == "dir" {
                             if ui.add_enabled(!self.busy, egui::Button::new(format!("📁 {}", n.name)).frame(false)).clicked() {
                                 enter = Some(n.path.clone());
                             }
@@ -735,6 +781,17 @@ impl App {
                 });
             });
         });
+        if clear_search {
+            self.found = None;
+        }
+        if search {
+            let (cfg, term, snap) = (self.cfg.clone(), self.find_term.clone(), id.clone());
+            self.status = "Suche …".into();
+            self.spawn(&ctx, move |tx| {
+                let r = job::open(&cfg).and_then(|r| r.find(&snap, &term, FIND_LIMIT));
+                let _ = tx.send(Msg::Found(r.map_err(|e| format!("{e:#}"))));
+            });
+        }
         if let Some(d) = enter {
             self.dir = d;
             self.load_dir(&ctx);
@@ -863,9 +920,6 @@ impl App {
                             let _ = tx.send(Msg::RepoInfo(job::describe_repo(&cfg).map_err(|e| format!("{e:#}"))));
                         });
                     }
-                    if self.busy {
-                        ui.spinner();
-                    }
                     ui::status(ui, &self.repo_msg);
                 });
                 ui::hint(ui, "Bestehendes Repo verwenden: Freigabe und Unterordner wie im Repo angeben, Passwort eintragen, dann „Repo prüfen“.");
@@ -976,6 +1030,7 @@ impl App {
                 }
             });
             ui::status(ui, &self.update_msg);
+            ui.checkbox(&mut self.cfg.notify_success, "Auch nach erfolgreichem Backup eine Desktop-Meldung senden");
             ui.checkbox(&mut self.cfg.check_updates, "Beim Start täglich nach einer neuen Version suchen");
             ui::hint_long(ui, "hint_update", "Die Suche fragt nur die öffentliche GitHub-Release-Seite ab und sendet keine Daten.", "Update: neues Setup (Windows) bzw. .deb/AppImage (Linux) installieren – Einstellungen und Passwörter bleiben erhalten. Danach den Zeitplan einmal neu aktivieren. Die Option wird mit „Speichern“ (Einstellungen) übernommen.");
         });
@@ -1182,10 +1237,9 @@ impl App {
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                     ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).color(MUTED).size(12.5));
                     if self.busy {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label(RichText::new("Arbeitet …").color(MUTED));
-                        });
+                        // Punkte statt `ui.spinner()`: der Spinner zeichnet bei jedem Frame neu (Dauer-Last für GPU/CPU)
+                        let dots = (ui.input(|i| i.time) * 3.0) as usize % 4;
+                        ui.label(RichText::new(format!("Arbeitet {}", ".".repeat(dots))).color(MUTED));
                     }
                 });
             });
@@ -1215,6 +1269,10 @@ impl eframe::App for App {
     // `logic` läuft auch bei verstecktem Fenster (Tray): Meldungen der Threads und Tray-Menü werden hier verarbeitet
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
+        // Meldungen der Threads kommen ohne eigenen Repaint an: im Takt nachsehen, solange etwas läuft
+        if self.busy {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
         if self.pending_overview && !self.busy {
             self.pending_overview = false;
             self.load_overview(ctx);

@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.18]
+
+### Hinzugefügt
+- Snapshots-Tab: Dateisuche im gewählten Snapshot (`restic find`, ohne Beachtung der Groß-/Kleinschreibung, `*` und `?` möglich). Treffer lassen sich einzeln wiederherstellen oder (Ordner) in der Ordneransicht öffnen.
+- Neue Option „Auch nach erfolgreichem Backup eine Desktop-Meldung senden“ (Info-Tab, Standard aus). Warnungen und Fehler werden weiterhin immer gemeldet.
+
+### Geändert
+- Die Oberfläche zeichnet nur noch alle 250 ms neu, solange etwas läuft, statt bei jedem Frame (weniger CPU- und GPU-Last).
+- Grafik über OpenGL (glow) statt wgpu/Vulkan: schnellerer Start, weniger Speicher. Die Oberfläche braucht kein Vulkan.
+
+### Behoben
+- Während eines Laufs drehten sich bis zu drei Spinner gleichzeitig. Es bleibt eine Anzeige „Arbeitet …“ in der Seitenleiste.
+
 ## [0.3.17]
 
 ### Hinzugefügt
