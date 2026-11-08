@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unveröffentlicht]
+## [0.3.20]
 
 ### Behoben
 - Windows-Installer: Läuft noch eine `restic.exe` aus dem Installationsordner (z. B. ein Backup, dessen App beendet wurde), beendet der Installer sie jetzt mit. Vorher brach das Update mit „DeleteFile schlug fehl; Code 5. Zugriff verweigert“ ab. Andere restic-Programme des Benutzers bleiben unberührt.
