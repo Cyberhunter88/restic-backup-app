@@ -49,6 +49,12 @@ pub fn parse_df(output: &str) -> Option<u64> {
     line.split_whitespace().nth(3)?.parse::<u64>().ok().map(|k| k * 1024)
 }
 
+/// Maskiert ein Feld für fstab und `/proc/mounts` (Leerzeichen, Tab, Zeilenumbruch und Backslash als Oktalcode).
+#[cfg(unix)]
+fn mount_escape(s: &str) -> String {
+    s.replace('\\', "\\134").replace(' ', "\\040").replace('\t', "\\011").replace('\n', "\\012")
+}
+
 #[cfg(unix)]
 pub use linux::{fstab_line, mount, unmount, write_credentials};
 #[cfg(windows)]
@@ -69,7 +75,7 @@ mod linux {
     }
 
     fn is_mounted(mp: &std::path::Path) -> bool {
-        let want = mp.to_string_lossy().replace(' ', "\\040");
+        let want = mount_escape(&mp.to_string_lossy());
         std::fs::read_to_string("/proc/mounts")
             .map(|s| s.lines().any(|l| l.split(' ').nth(1) == Some(want.as_str())))
             .unwrap_or(false)
@@ -94,13 +100,17 @@ mod linux {
         let mp = mount_point()?;
         let md = std::fs::metadata(&mp)?;
         Ok(format!(
-            "//{}/{} {} cifs user,noauto,credentials={},uid={},gid={},iocharset=utf8 0 0",
-            cfg.host, cfg.share, mp.display(), cred_path()?.display(), md.uid(), md.gid()
+            "{} {} cifs user,noauto,credentials={},uid={},gid={},iocharset=utf8 0 0",
+            mount_escape(&format!("//{}/{}", cfg.host, cfg.share)),
+            mount_escape(&mp.to_string_lossy()),
+            mount_escape(&cred_path()?.to_string_lossy()),
+            md.uid(),
+            md.gid()
         ))
     }
 
     fn in_fstab(mp: &std::path::Path) -> bool {
-        let want = mp.to_string_lossy().replace(' ', "\\040");
+        let want = mount_escape(&mp.to_string_lossy());
         std::fs::read_to_string("/etc/fstab")
             .map(|s| s.lines().any(|l| !l.trim_start().starts_with('#') && l.split_whitespace().nth(1) == Some(want.as_str())))
             .unwrap_or(false)
@@ -318,6 +328,13 @@ mod tests {
         let o = "Filesystem 1024-blocks Used Available Capacity Mounted on\n//nas/share 1000 400 600 40% /mnt\n";
         assert_eq!(parse_df(o), Some(600 * 1024));
         assert_eq!(parse_df("leer"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mount_escape_wie_fstab() {
+        assert_eq!(mount_escape("/home/a b/c\\d"), "/home/a\\040b/c\\134d");
+        assert_eq!(mount_escape("/ohne"), "/ohne");
     }
 
     #[cfg(windows)]
