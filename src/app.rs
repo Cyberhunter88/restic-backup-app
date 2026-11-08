@@ -202,11 +202,11 @@ impl App {
         self.tray.is_some()
     }
 
-    /// Tray-Menü bedienen und das Schließen des Fensters in den Tray umleiten.
+    /// Tray-Menü bedienen und das Schließen des Fensters (X) umleiten: Die App läuft im Hintergrund weiter, auch
+    /// ohne Tray-Icon. Dann holt ein erneuter Programmstart das Fenster zurück (siehe `main`).
     fn handle_tray(&mut self, ctx: &egui::Context) {
         use crate::tray::TrayCmd;
-        let Some(tray) = &self.tray else { return };
-        let cmds: Vec<TrayCmd> = tray.rx.try_iter().collect();
+        let cmds: Vec<TrayCmd> = self.tray.as_ref().map(|t| t.rx.try_iter().collect()).unwrap_or_default();
         for c in cmds {
             match c {
                 TrayCmd::Open => {
@@ -1044,8 +1044,9 @@ impl App {
             });
             ui::status(ui, &self.update_msg);
             ui.checkbox(&mut self.cfg.notify_success, "Auch nach erfolgreichem Backup eine Desktop-Meldung senden");
-            if self.has_tray() {
-                ui.checkbox(&mut self.cfg.close_to_tray, "Fenster schließen = in den Tray minimieren (aus: App beenden)");
+            ui.checkbox(&mut self.cfg.close_to_tray, "Fenster schließen (X) = im Hintergrund weiterlaufen (aus: App beenden)");
+            if !self.has_tray() {
+                ui::hint(ui, "Kein Tray-Icon verfügbar: Das Fenster kommt zurück, wenn die App erneut gestartet wird.");
             }
             ui.checkbox(&mut self.cfg.check_updates, "Beim Start täglich nach einer neuen Version suchen");
             ui::hint_long(ui, "hint_update", "Die Suche fragt nur die öffentliche GitHub-Release-Seite ab und sendet keine Daten.", "Update: neues Setup (Windows) bzw. .deb/AppImage (Linux) installieren – Einstellungen und Passwörter bleiben erhalten. Danach den Zeitplan einmal neu aktivieren. Die Option wird mit „Speichern“ (Einstellungen) übernommen.");
