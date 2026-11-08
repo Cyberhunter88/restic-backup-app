@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unveröffentlicht]
+## [0.3.23]
 
 ### Geändert
 - Die Schaltfläche „Beenden“ in der Seitenleiste ist entfernt (sie zeigte unter Windows außerdem ein leeres Kästchen). Beenden geht über das X des Fensters (Option „Fenster schließen = in den Tray“ aus) oder über das Tray-Menü.
