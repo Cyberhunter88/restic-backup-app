@@ -2,6 +2,9 @@
 
 ## [Unveröffentlicht]
 
+### Behoben
+- „Beenden“ in der Seitenleiste zeigte unter Windows ein leeres Kästchen statt eines Symbols (das Zeichen fehlte in der Schrift).
+
 ### Geändert
 - Vor dem Aufräumen entfernt die App veraltete Repository-Sperren (`restic unlock`). Eine nach einem abgebrochenen Lauf liegengebliebene Sperre löste sonst bei jedem Lauf die Warnung „Aufräumen fehlgeschlagen“ aus.
 - „Übliche Ausschlüsse“ enthalten jetzt Sperrdateien laufender Programme (`LOCK` der Browser-Datenbanken, `.codex`-Sperrdateien). Unter Windows sind sie nicht lesbar und lösten bei jedem Lauf die Warnung „Einige Dateien waren nicht lesbar“ aus. Bestehende Einstellungen ändern sich nicht: den Button „Übliche Ausschlüsse“ einmal erneut anklicken.
