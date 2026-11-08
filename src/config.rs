@@ -17,6 +17,9 @@ pub struct Config {
     pub excludes: Vec<String>,
     /// Verzeichnisse mit CACHEDIR.TAG ausschließen
     pub exclude_caches: bool,
+    /// Nicht in andere Dateisysteme wechseln: eingehängte Laufwerke und Netzfreigaben unter einem Quellordner
+    /// werden nicht mitgesichert (nur Linux; Standard an)
+    pub one_file_system: bool,
     /// Vor dem Sichern nicht erst alle Dateien zählen (`--no-scan`): schneller, aber ohne Prozentanzeige
     pub no_scan: bool,
     /// Ordner, die eine dieser Dateien enthalten, werden ausgeschlossen (z. B. `.nobackup`)
@@ -64,6 +67,7 @@ impl Default for Config {
             separate_snapshots: false,
             excludes: vec![],
             exclude_caches: true,
+            one_file_system: cfg!(unix),
             no_scan: true,
             exclude_if_present: vec![],
             exclude_larger_than: String::new(),

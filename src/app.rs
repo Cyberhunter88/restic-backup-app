@@ -957,6 +957,9 @@ impl App {
                 });
                 ui.separator();
                 ui.checkbox(&mut self.cfg.exclude_caches, "Ordner mit CACHEDIR.TAG ausschließen");
+                #[cfg(unix)]
+                ui.checkbox(&mut self.cfg.one_file_system, "Nicht in andere Laufwerke und Netzfreigaben wechseln")
+                    .on_hover_text("Gemountete Laufwerke, USB-Platten und Netzfreigaben unterhalb eines gewählten Ordners werden nicht mitgesichert. Gewählte Ordner selbst werden immer gesichert.");
                 ui.checkbox(&mut self.cfg.no_scan, "Schneller sichern: Dateien nicht vorab zählen (keine Prozentanzeige)");
                 ui.horizontal(|ui| {
                     ui.label("Dateien größer als");

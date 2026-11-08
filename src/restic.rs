@@ -190,6 +190,9 @@ pub struct BackupOptions<'a> {
     pub sources: &'a [String],
     pub excludes: &'a [String],
     pub exclude_caches: bool,
+    /// Nicht in andere Dateisysteme wechseln (`--one-file-system`): gemountete Laufwerke und Netzfreigaben
+    /// unterhalb eines Quellordners werden nicht mitgesichert
+    pub one_file_system: bool,
     pub exclude_if_present: &'a [String],
     pub exclude_larger_than: &'a str,
     /// Keine Vorabzählung der Dateien (`--no-scan`)
@@ -229,6 +232,9 @@ pub fn backup_args(o: &BackupOptions) -> Vec<String> {
     }
     if o.exclude_caches {
         a.push("--exclude-caches".into());
+    }
+    if o.one_file_system {
+        a.push("--one-file-system".into());
     }
     for f in o.exclude_if_present.iter().filter(|f| !f.trim().is_empty()) {
         a.extend(["--exclude-if-present".into(), f.trim().into()]);
@@ -487,6 +493,17 @@ mod tests {
     }
 
     #[test]
+    fn one_file_system_nur_auf_wunsch() {
+        let src = vec!["/home/x".to_string()];
+        let mut o = BackupOptions { sources: &src, ..Default::default() };
+        assert!(!backup_args(&o).contains(&"--one-file-system".to_string()));
+        o.one_file_system = true;
+        let a = backup_args(&o);
+        assert!(a.contains(&"--one-file-system".to_string()));
+        assert_eq!(a.last().unwrap(), "/home/x");
+    }
+
+    #[test]
     fn find_parsed() {
         let o = r#"[{"hits":2,"snapshot":"abc","matches":[{"path":"/C/Users/x/a.txt","type":"file","size":5},{"path":"/C/Users/x/docs","type":"dir"}]},{"hits":1,"snapshot":"abc","matches":[{"path":"/b.txt","type":"file","size":1}]}]"#;
         let n = parse_find(o, 10);
@@ -546,6 +563,7 @@ mod tests {
             sources: &src,
             excludes: &ex,
             exclude_caches: true,
+            one_file_system: false,
             exclude_if_present: &nb,
             exclude_larger_than: "500M",
             host: "pc",
@@ -628,7 +646,7 @@ mod tests {
         r.init().unwrap();
         let (srcs, ex, nb) = (vec![src.to_string_lossy().into_owned()], vec!["*.tmp".to_string(), "node_modules".to_string()], vec![".nobackup".to_string()]);
         r.backup(
-            &BackupOptions { sources: &srcs, excludes: &ex, exclude_caches: true, exclude_if_present: &nb, exclude_larger_than: "1M", host: "testhost", no_scan: true, pack_size_mib: 64, connections: 8 },
+            &BackupOptions { sources: &srcs, excludes: &ex, exclude_caches: true, one_file_system: false, exclude_if_present: &nb, exclude_larger_than: "1M", host: "testhost", no_scan: true, pack_size_mib: 64, connections: 8 },
             &AtomicBool::new(false),
             |_| {},
         )

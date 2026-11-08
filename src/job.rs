@@ -90,6 +90,20 @@ pub fn repo_overview(cfg: &Config) -> Result<RepoOverview> {
     Ok(RepoOverview { size: stats.size, snapshots: r.snapshots()?.len(), free: smb::free_space(&r.repo) })
 }
 
+/// Eigene Ausschlüsse plus das Datenverzeichnis der App. Dort liegen der Mountpunkt des NAS (`mnt`, enthält das
+/// Repository selbst), der restic-Cache und die SMB-Zugangsdaten; liegt ein Quellordner darüber (z. B. das
+/// Home-Verzeichnis), würde sonst das Repository in sich selbst gesichert.
+fn excludes_with_data_dir(excludes: &[String]) -> Vec<String> {
+    let mut v = excludes.to_vec();
+    if let Ok(d) = crate::config::data_dir() {
+        let d = d.to_string_lossy().into_owned();
+        if !v.contains(&d) {
+            v.push(d);
+        }
+    }
+    v
+}
+
 /// Sichert die Quellordner: entweder alle in einem Snapshot oder (`separate_snapshots`) je Ordner einen.
 /// Schlägt nur ein Teil der Ordner fehl, gilt der Lauf als Warnung; schlagen alle fehl, ist es ein Fehler.
 fn backup_sources(r: &Restic, cfg: &Config, host: &str, cancel: &AtomicBool, mut log: impl FnMut(String), mut on_event: impl FnMut(BackupEvent)) -> Result<BackupOutcome> {
@@ -97,6 +111,7 @@ fn backup_sources(r: &Restic, cfg: &Config, host: &str, cancel: &AtomicBool, mut
     let mut outcome = BackupOutcome::default();
     let mut errors = vec![];
     let (pack_size_mib, connections) = crate::restic::tuning_for(r.version());
+    let excludes = excludes_with_data_dir(&cfg.excludes);
     for group in &groups {
         if cancel.load(Ordering::Relaxed) {
             bail!("Backup abgebrochen");
@@ -105,8 +120,9 @@ fn backup_sources(r: &Restic, cfg: &Config, host: &str, cancel: &AtomicBool, mut
         let res = r.backup(
             &BackupOptions {
                 sources: group,
-                excludes: &cfg.excludes,
+                excludes: &excludes,
                 exclude_caches: cfg.exclude_caches,
+                one_file_system: cfg.one_file_system,
                 exclude_if_present: &cfg.exclude_if_present,
                 exclude_larger_than: &cfg.exclude_larger_than,
                 host,
@@ -223,6 +239,15 @@ pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn datenverzeichnis_wird_immer_ausgeschlossen() {
+        let d = crate::config::data_dir().unwrap().to_string_lossy().into_owned();
+        let v = excludes_with_data_dir(&["*.tmp".to_string()]);
+        assert_eq!(v, vec!["*.tmp".to_string(), d.clone()]);
+        // nicht doppelt
+        assert_eq!(excludes_with_data_dir(&v).len(), 2);
+    }
 
     fn restic_available() -> bool {
         std::process::Command::new("restic").arg("version").output().is_ok()
