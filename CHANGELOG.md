@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unveröffentlicht]
+
+### Geändert
+- Backups auf das NAS sind schneller: größere Packdateien (`--pack-size 64`, weniger SMB-Roundtrips) und mehr parallele Schreibvorgänge im Repository (`-o local.connections=8`, ab restic 0.17). Die App prüft die restic-Version und nutzt nur, was sie kennt; ältere Versionen laufen unverändert.
+
 ## [0.3.17]
 
 ### Hinzugefügt

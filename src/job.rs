@@ -96,6 +96,7 @@ fn backup_sources(r: &Restic, cfg: &Config, host: &str, cancel: &AtomicBool, mut
     let groups: Vec<&[String]> = if cfg.separate_snapshots { cfg.sources.chunks(1).collect() } else { vec![&cfg.sources[..]] };
     let mut outcome = BackupOutcome::default();
     let mut errors = vec![];
+    let (pack_size_mib, connections) = crate::restic::tuning_for(r.version());
     for group in &groups {
         if cancel.load(Ordering::Relaxed) {
             bail!("Backup abgebrochen");
@@ -109,6 +110,8 @@ fn backup_sources(r: &Restic, cfg: &Config, host: &str, cancel: &AtomicBool, mut
                 exclude_if_present: &cfg.exclude_if_present,
                 exclude_larger_than: &cfg.exclude_larger_than,
                 host,
+                pack_size_mib,
+                connections,
             },
             cancel,
             &mut on_event,
