@@ -1,11 +1,5 @@
 # Changelog
 
-## [Unveröffentlicht]
-
-### Geändert
-- Neue Einstellung „Schneller sichern“ (Standard an): restic zählt die Dateien nicht mehr vorab (`--no-scan`), das Backup beginnt sofort. Dafür zeigt die Fortschrittsanzeige Dateien und Datenmenge statt Prozent.
-- Backups auf das NAS sind schneller: größere Packdateien (`--pack-size 64`, weniger SMB-Roundtrips) und mehr parallele Schreibvorgänge im Repository (`-o local.connections=8`, ab restic 0.17). Die App prüft die restic-Version und nutzt nur, was sie kennt; ältere Versionen laufen unverändert.
-
 ## [0.3.17]
 
 ### Hinzugefügt
@@ -13,6 +7,8 @@
 - Einstellungen: Feld „Rechnername“ für Snapshots. Ein fester Name verhindert, dass nach einer Umbenennung des Rechners das ganze Backup neu eingelesen wird (kein Parent-Snapshot) und das Aufräumen alte Snapshots übersieht. Leer = Name des Rechners wie bisher.
 
 ### Geändert
+- Neue Einstellung „Schneller sichern“ (Standard an): restic zählt die Dateien nicht mehr vorab (`--no-scan`), das Backup beginnt sofort. Dafür zeigt die Fortschrittsanzeige Dateien und Datenmenge statt Prozent.
+- Backups auf das NAS sind schneller: größere Packdateien (`--pack-size 64`, weniger SMB-Roundtrips) und mehr parallele Schreibvorgänge im Repository (`-o local.connections=8`, ab restic 0.17). Die App prüft die restic-Version und nutzt nur, was sie kennt; ältere Versionen laufen unverändert.
 - Linux-Build: linuxdeploy und die AppImage-Runtime werden mit Wiederholungen geladen (GitHub lieferte gelegentlich HTTP 504).
 
 ### Behoben
