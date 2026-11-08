@@ -103,6 +103,9 @@ const COMMON_ALL: &[&str] = &[
     // Allgemein: Browser-, Electron- und Spiele-Caches (liegen je nach System unter AppData bzw. ~/.config)
     "**/Code Cache", "**/GPUCache", "**/ShaderCache", "**/DawnGraphiteCache", "**/DawnWebGPUCache", "**/Service Worker/CacheStorage",
     "**/GrShaderCache", "**/Crashpad", "**/DXCache", "**/GLCache",
+    // Allgemein: Sperrdateien laufender Programme (Browser-Datenbanken, Codex); sie sind unter Windows nicht lesbar
+    // und würden das Backup jedes Mal mit einer Warnung beenden
+    "**/LOCK", "**/.codex/tmp", "**/.codex/*.lock", "**/.codex/.codex-provisioning-*.guard",
 ];
 
 /// Übliche Ausschlüsse nur für Windows (System-Dateien, AppData).
