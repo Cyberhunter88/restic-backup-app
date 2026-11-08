@@ -163,6 +163,27 @@ pub struct BackupOptions<'a> {
     pub exclude_if_present: &'a [String],
     pub exclude_larger_than: &'a str,
     pub host: &'a str,
+    /// Ziel-Packgröße in MiB (0 = restic-Standard); größere Packs bedeuten weniger SMB-Roundtrips
+    pub pack_size_mib: u32,
+    /// Parallele Schreibvorgänge im Repo (0 = restic-Standard 2); auf SMB mit Latenz deutlich schneller
+    pub connections: u32,
+}
+
+/// Version aus der Ausgabe von `restic version` („restic 0.18.1 compiled with …“).
+pub fn parse_version(out: &str) -> Option<(u32, u32)> {
+    let v = out.split_whitespace().nth(1)?;
+    let mut it = v.split('.');
+    Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+}
+
+/// Einstellungen zur Beschleunigung, die es erst in neueren restic-Versionen gibt (`--pack-size` ab 0.14,
+/// `-o local.connections` ab 0.17); ältere Versionen würden sonst mit „unknown flag/option“ scheitern.
+pub fn tuning_for(version: Option<(u32, u32)>) -> (u32, u32) {
+    match version {
+        Some(v) if v >= (0, 17) => (64, 8),
+        Some(v) if v >= (0, 14) => (64, 0),
+        _ => (0, 0),
+    }
 }
 
 pub fn backup_args(o: &BackupOptions) -> Vec<String> {
@@ -182,6 +203,12 @@ pub fn backup_args(o: &BackupOptions) -> Vec<String> {
     }
     if !o.exclude_larger_than.trim().is_empty() {
         a.extend(["--exclude-larger-than".into(), o.exclude_larger_than.trim().into()]);
+    }
+    if o.pack_size_mib > 0 {
+        a.extend(["--pack-size".into(), o.pack_size_mib.to_string()]);
+    }
+    if o.connections > 0 {
+        a.extend(["-o".into(), format!("local.connections={}", o.connections)]);
     }
     a.extend(o.sources.iter().cloned());
     a
@@ -271,6 +298,11 @@ impl Restic {
                 }
             },
         }
+    }
+
+    /// Version des restic-Programms (Major, Minor); `None`, wenn sie sich nicht ermitteln lässt.
+    pub fn version(&self) -> Option<(u32, u32)> {
+        parse_version(&self.run(&Self::s(&["version"])).ok()?)
     }
 
     pub fn init(&self) -> Result<()> {
@@ -463,11 +495,28 @@ mod tests {
             exclude_if_present: &nb,
             exclude_larger_than: "500M",
             host: "pc",
+            pack_size_mib: 64,
+            connections: 8,
         });
         assert_eq!(
             a,
-            ["backup", "--json", "--read-concurrency", "4", "--host", "pc", "--exclude", "*.tmp", "--exclude-caches", "--exclude-if-present", ".nobackup", "--exclude-larger-than", "500M", "/data"]
+            [
+                "backup", "--json", "--read-concurrency", "4", "--host", "pc", "--exclude", "*.tmp", "--exclude-caches", "--exclude-if-present", ".nobackup",
+                "--exclude-larger-than", "500M", "--pack-size", "64", "-o", "local.connections=8", "/data"
+            ]
         );
+    }
+
+    #[test]
+    fn version_and_tuning() {
+        assert_eq!(parse_version("restic 0.19.1 compiled with go1.26.4 on windows/amd64
+"), Some((0, 19)));
+        assert_eq!(parse_version("kaputt"), None);
+        assert_eq!(tuning_for(Some((0, 19))), (64, 8));
+        assert_eq!(tuning_for(Some((0, 16))), (64, 0));
+        assert_eq!(tuning_for(Some((0, 13))), (0, 0));
+        assert_eq!(tuning_for(None), (0, 0));
+        assert_eq!(tuning_for(Some((1, 0))), (64, 8));
     }
 
     #[test]
@@ -524,7 +573,7 @@ mod tests {
         r.init().unwrap();
         let (srcs, ex, nb) = (vec![src.to_string_lossy().into_owned()], vec!["*.tmp".to_string(), "node_modules".to_string()], vec![".nobackup".to_string()]);
         r.backup(
-            &BackupOptions { sources: &srcs, excludes: &ex, exclude_caches: true, exclude_if_present: &nb, exclude_larger_than: "1M", host: "testhost" },
+            &BackupOptions { sources: &srcs, excludes: &ex, exclude_caches: true, exclude_if_present: &nb, exclude_larger_than: "1M", host: "testhost", pack_size_mib: 64, connections: 8 },
             &AtomicBool::new(false),
             |_| {},
         )
