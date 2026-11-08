@@ -110,6 +110,7 @@ fn backup_sources(r: &Restic, cfg: &Config, host: &str, cancel: &AtomicBool, mut
                 exclude_if_present: &cfg.exclude_if_present,
                 exclude_larger_than: &cfg.exclude_larger_than,
                 host,
+                no_scan: cfg.no_scan,
                 pack_size_mib,
                 connections,
             },

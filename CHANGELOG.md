@@ -3,6 +3,7 @@
 ## [Unveröffentlicht]
 
 ### Geändert
+- Neue Einstellung „Schneller sichern“ (Standard an): restic zählt die Dateien nicht mehr vorab (`--no-scan`), das Backup beginnt sofort. Dafür zeigt die Fortschrittsanzeige Dateien und Datenmenge statt Prozent.
 - Backups auf das NAS sind schneller: größere Packdateien (`--pack-size 64`, weniger SMB-Roundtrips) und mehr parallele Schreibvorgänge im Repository (`-o local.connections=8`, ab restic 0.17). Die App prüft die restic-Version und nutzt nur, was sie kennt; ältere Versionen laufen unverändert.
 
 ## [0.3.17]

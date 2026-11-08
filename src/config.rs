@@ -17,6 +17,8 @@ pub struct Config {
     pub excludes: Vec<String>,
     /// Verzeichnisse mit CACHEDIR.TAG ausschließen
     pub exclude_caches: bool,
+    /// Vor dem Sichern nicht erst alle Dateien zählen (`--no-scan`): schneller, aber ohne Prozentanzeige
+    pub no_scan: bool,
     /// Ordner, die eine dieser Dateien enthalten, werden ausgeschlossen (z. B. `.nobackup`)
     pub exclude_if_present: Vec<String>,
     /// Dateien größer als dieser Wert werden ausgeschlossen (restic-Format, z. B. `500M`); leer = aus
@@ -60,6 +62,7 @@ impl Default for Config {
             separate_snapshots: false,
             excludes: vec![],
             exclude_caches: true,
+            no_scan: true,
             exclude_if_present: vec![],
             exclude_larger_than: String::new(),
             allow_init: false,

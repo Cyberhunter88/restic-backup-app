@@ -162,6 +162,8 @@ pub struct BackupOptions<'a> {
     pub exclude_caches: bool,
     pub exclude_if_present: &'a [String],
     pub exclude_larger_than: &'a str,
+    /// Keine Vorabzählung der Dateien (`--no-scan`)
+    pub no_scan: bool,
     pub host: &'a str,
     /// Ziel-Packgröße in MiB (0 = restic-Standard); größere Packs bedeuten weniger SMB-Roundtrips
     pub pack_size_mib: u32,
@@ -203,6 +205,9 @@ pub fn backup_args(o: &BackupOptions) -> Vec<String> {
     }
     if !o.exclude_larger_than.trim().is_empty() {
         a.extend(["--exclude-larger-than".into(), o.exclude_larger_than.trim().into()]);
+    }
+    if o.no_scan {
+        a.push("--no-scan".into());
     }
     if o.pack_size_mib > 0 {
         a.extend(["--pack-size".into(), o.pack_size_mib.to_string()]);
@@ -495,6 +500,7 @@ mod tests {
             exclude_if_present: &nb,
             exclude_larger_than: "500M",
             host: "pc",
+            no_scan: true,
             pack_size_mib: 64,
             connections: 8,
         });
@@ -502,7 +508,7 @@ mod tests {
             a,
             [
                 "backup", "--json", "--read-concurrency", "4", "--host", "pc", "--exclude", "*.tmp", "--exclude-caches", "--exclude-if-present", ".nobackup",
-                "--exclude-larger-than", "500M", "--pack-size", "64", "-o", "local.connections=8", "/data"
+                "--exclude-larger-than", "500M", "--no-scan", "--pack-size", "64", "-o", "local.connections=8", "/data"
             ]
         );
     }
@@ -573,7 +579,7 @@ mod tests {
         r.init().unwrap();
         let (srcs, ex, nb) = (vec![src.to_string_lossy().into_owned()], vec!["*.tmp".to_string(), "node_modules".to_string()], vec![".nobackup".to_string()]);
         r.backup(
-            &BackupOptions { sources: &srcs, excludes: &ex, exclude_caches: true, exclude_if_present: &nb, exclude_larger_than: "1M", host: "testhost", pack_size_mib: 64, connections: 8 },
+            &BackupOptions { sources: &srcs, excludes: &ex, exclude_caches: true, exclude_if_present: &nb, exclude_larger_than: "1M", host: "testhost", no_scan: true, pack_size_mib: 64, connections: 8 },
             &AtomicBool::new(false),
             |_| {},
         )
