@@ -2,12 +2,22 @@
 
 ## [Unveröffentlicht]
 
+## [0.3.27]
+
+### Behoben
+- Schlüsselbund: War er beim ersten Zugriff noch nicht bereit (kurz nach Anmeldung oder Aufwachen, „No default store has been set“), blieb er für den ganzen Prozess unbrauchbar, im Fenster also bis zum Neustart der App. Jetzt versucht jeder Zugriff die Verbindung erneut, und der Zeitplan-Lauf wartet bis zu 4 Minuten auf ihn (statt sich wie in 0.3.26 selbst neu zu starten). Gespeicherte Passwörter bleiben gültig.
+- Die Erkennung eines Zeitplan-Laufs fasst die Backup-Sperre nur noch an, wenn ein Lauf seinen Status gemeldet hat. Vorher hielt die App sie alle paar Sekunden kurz zur Probe; ein Zeitplan-Lauf, der genau dann startete, hätte sich mit „läuft bereits“ beendet.
+- Startet man ein Backup, während gerade ein Zeitplan-Lauf begonnen hat, zeigt die App diesen Lauf an statt des Fehlers „Es läuft bereits ein Backup“.
+
+### Geändert
+- „Abbrechen“ bei einem Zeitplan-Lauf meldet „Abbruch angefordert“ und lässt sich nicht mehrfach drücken.
+
 ## [0.3.26]
 
 ### Behoben
 - Ein Backup, das der Zeitplan gestartet hat, erkennt die App jetzt: Auf dem Tab „Backup“ erscheint „Zeitplan-Backup läuft“ mit Schritt und Fortschritt, „Backup jetzt starten“ ist solange gesperrt (statt „Es läuft bereits ein Backup“ als Fehler). Nach dem Ende laden Letzter Lauf, Verlauf und Snapshots sich neu. Funktioniert unter Linux und Windows (Dateisperre und Statusdatei im Datenverzeichnis).
-- „Abbrechen“ stoppt auch einen Zeitplan-Lauf (über die Datei `cancel.flag`, ohne Signale).
-- Schlüsselbund: War er beim ersten Zugriff noch nicht bereit (kurz nach Anmeldung oder Aufwachen, „No default store has been set“), blieb er bisher für den ganzen Prozess unbrauchbar, auch im Fenster bis zum Neustart der App. Jetzt versucht jeder Zugriff die Verbindung erneut, und der Zeitplan-Lauf wartet bis zu 4 Minuten auf ihn. Gespeicherte Passwörter bleiben gültig.
+- „Abbrechen“ stoppt auch ein Zeitplan-Lauf (über die Datei `cancel.flag`, ohne Signale).
+- Linux: Ist der Schlüsselbund kurz nach Anmeldung oder Aufwachen noch nicht bereit („No default store has been set“), startet sich der Zeitplan-Lauf bis zu 8× im Abstand von 30 s neu, statt sofort mit Fehler zu enden.
 
 ## [0.3.25]
 
