@@ -55,6 +55,8 @@ fn run_headless(quiet_if_busy: bool) -> anyhow::Result<()> {
             }
         });
     }
+    // Zuletzt gemeldeter ganzer Prozentwert
+    let last_percent = std::cell::Cell::new(-1i64);
     let status = std::cell::RefCell::new(config::RunStatus { started: Some(chrono::Local::now().naive_local()), ..Default::default() });
     let result = job::run_backup(
         &cfg,
@@ -69,8 +71,9 @@ fn run_headless(quiet_if_busy: bool) -> anyhow::Result<()> {
         |e| {
             // Nur bei ganzen Prozentschritten schreiben (restic meldet mehrmals pro Sekunde)
             if let restic::BackupEvent::Progress { percent, .. } = e {
-                let mut s = status.borrow_mut();
-                if (percent * 100.0).floor() != f64::from(s.percent * 100.0).floor() {
+                let whole = (percent * 100.0).floor() as i64;
+                if whole != last_percent.replace(whole) {
+                    let mut s = status.borrow_mut();
                     s.percent = percent as f32;
                     config::write_run_status(&s);
                 }

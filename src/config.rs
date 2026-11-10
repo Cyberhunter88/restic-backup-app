@@ -370,15 +370,6 @@ impl RunLock {
             Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
         }
     }
-
-    /// Läuft gerade ein Backup (in diesem oder einem anderen Prozess)? Hält die Sperre nur kurz zur Probe.
-    pub fn is_held() -> bool {
-        let Ok(d) = data_dir() else { return false };
-        let Ok(f) = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(d.join("run.lock")) else {
-            return false;
-        };
-        matches!(f.try_lock(), Err(std::fs::TryLockError::WouldBlock))
-    }
 }
 
 impl Drop for RunLock {
@@ -425,13 +416,24 @@ pub fn write_run_status(s: &RunStatus) {
 }
 
 /// Läuft ein Backup in einem anderen Prozess? Nur gültig, wenn dieser Prozess selbst keins hält.
+///
+/// Solange keine Statusdatei da ist, wird die Sperre gar nicht angefasst: Eine Probe hielte sie kurz selbst, und
+/// ein Zeitplan-Lauf, der genau dann startet, würde sich mit „läuft bereits“ beenden.
 pub fn read_external_run() -> Option<RunStatus> {
-    if !RunLock::is_held() {
-        return None;
+    let d = data_dir().ok()?;
+    let path = d.join(RUN_STATUS_FILE);
+    let text = std::fs::read_to_string(&path).ok()?;
+    let lock = std::fs::OpenOptions::new().write(true).open(d.join("run.lock")).ok()?;
+    match lock.try_lock() {
+        Err(std::fs::TryLockError::WouldBlock) => Some(parse_run_status(&text)),
+        Ok(()) => {
+            // Niemand hält die Sperre: Die Datei blieb von einem abgestürzten Lauf übrig. Solange wir die Sperre
+            // halten, kann kein neuer Lauf sie gerade geschrieben haben, sie darf also weg.
+            let _ = std::fs::remove_file(&path);
+            None
+        }
+        Err(std::fs::TryLockError::Error(_)) => None,
     }
-    // Die Statusdatei kann kurz fehlen (Lauf startet oder endet gerade): dann ohne Angaben anzeigen
-    let status = data_dir().ok().and_then(|d| std::fs::read_to_string(d.join(RUN_STATUS_FILE)).ok()).map(|t| parse_run_status(&t));
-    Some(status.unwrap_or_default())
 }
 
 /// Bittet den laufenden Backup-Prozess (Zeitplan), abzubrechen.
