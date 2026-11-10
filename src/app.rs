@@ -67,6 +67,8 @@ pub struct App {
     /// Ein Backup läuft in einem anderen Prozess (Zeitplan); die App zeigt es an und kann es abbrechen
     external_run: Option<crate::config::RunStatus>,
     external_checked: std::time::Instant,
+    /// „Abbrechen“ wurde für den fremden Lauf schon gedrückt
+    external_cancel: bool,
     progress: f32,
     /// Text statt Balken, wenn die Gesamtmenge unbekannt ist (`--no-scan`)
     progress_text: String,
@@ -155,6 +157,7 @@ impl App {
             busy: false,
             external_run: None,
             external_checked: std::time::Instant::now(),
+            external_cancel: false,
             progress: 0.0,
             progress_text: String::new(),
             log: vec![],
@@ -297,6 +300,9 @@ impl App {
             if self.overview.is_some() {
                 self.pending_overview = true;
             }
+        }
+        if now.is_none() {
+            self.external_cancel = false;
         }
         self.external_run = now;
     }
@@ -618,10 +624,14 @@ impl App {
                 }
                 ui.horizontal(|ui| {
                     ui.add(egui::ProgressBar::new(run.percent).show_percentage().desired_width(ui.available_width() - 110.0));
-                    if ui.button("Abbrechen").clicked() {
+                    if ui.add_enabled(!self.external_cancel, egui::Button::new("Abbrechen")).clicked() {
                         crate::config::request_cancel();
+                        self.external_cancel = true;
                     }
                 });
+                if self.external_cancel {
+                    ui::hint(ui, "Abbruch angefordert – der Lauf endet nach dem aktuellen Schritt.");
+                }
             });
         }
 
