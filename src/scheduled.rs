@@ -1,7 +1,8 @@
 //! Zeitplan-Lauf (`--scheduled`): entscheidet selbst, ob gesichert wird. Der Zeitplan startet die
-//! App oft (Uhrzeiten, Anmeldung, Entsperren, alle 30 Minuten); gesichert wird nur, wenn seit dem
-//! letzten geplanten Termin noch kein Backup gelang, keine Pause aktiv ist und das NAS erreichbar
-//! ist. In allen anderen Fällen endet der Lauf still, ohne `last-run.log` zu überschreiben.
+//! App oft (Uhrzeiten, Anmeldung, Entsperren, Aufwachen, Netzwerk verbunden, alle 10 Minuten); gesichert
+//! wird nur, wenn seit dem letzten geplanten Termin noch kein Backup gelang, keine Pause aktiv ist und das
+//! NAS erreichbar ist. In allen anderen Fällen endet der Lauf, ohne `last-run.log` zu überschreiben; die
+//! Entscheidung steht dann nur in `schedule.log`.
 use crate::config::{self, Config};
 use crate::schedule;
 use anyhow::Result;
@@ -11,20 +12,26 @@ use chrono::NaiveDateTime;
 pub enum Decision {
     Run,
     Skip(&'static str),
+    /// Nach einem Fehlschlag: frühestens zu diesem Zeitpunkt neu versuchen
+    Wait(NaiveDateTime),
 }
 
-/// Nach einem fehlgeschlagenen Lauf so viele Stunden warten, bevor der Zeitplan es erneut versucht
-/// (sonst gäbe es bei dauerhaftem Fehler alle 30 Minuten einen Versuch samt Meldung und Verlaufseintrag).
-const RETRY_AFTER_FAILURE_HOURS: i64 = 2;
+/// Wartezeit in Minuten nach dem `count`-ten Fehlschlag in Folge. Kurze Störungen (Netz nach dem Aufwachen noch
+/// nicht bereit) sind so nach wenigen Minuten überwunden; bei einem dauerhaften Fehler gibt es trotzdem nicht
+/// alle paar Minuten einen Versuch samt Verlaufseintrag.
+pub fn retry_delay_minutes(count: u32) -> i64 {
+    match count {
+        0 => 0,
+        1 => 5,
+        2 => 15,
+        3 => 60,
+        _ => 120,
+    }
+}
 
 /// Reine Entscheidung ohne Seiteneffekte: Pause, Fälligkeit, Wartezeit nach Fehler.
-pub fn decide(
-    now: NaiveDateTime,
-    cfg: &Config,
-    last_success: Option<NaiveDateTime>,
-    pause: Option<NaiveDateTime>,
-    last_failure: Option<NaiveDateTime>,
-) -> Result<Decision> {
+/// `failures`: fehlgeschlagene Zeitplan-Läufe in Folge und Zeitpunkt des letzten.
+pub fn decide(now: NaiveDateTime, cfg: &Config, last_success: Option<NaiveDateTime>, pause: Option<NaiveDateTime>, failures: Option<(u32, NaiveDateTime)>) -> Result<Decision> {
     if config::pause_active(pause, now) {
         return Ok(Decision::Skip("Zeitplan ist pausiert"));
     }
@@ -33,8 +40,13 @@ pub fn decide(
         return Ok(Decision::Skip("Kein Backup fällig"));
     }
     // Nur ein Fehler nach dem fälligen Termin zählt (ein älterer betraf einen früheren Termin)
-    let recent_failure = last_failure.is_some_and(|f| slot.is_some_and(|s| f >= s) && now.signed_duration_since(f).num_hours() < RETRY_AFTER_FAILURE_HOURS);
-    Ok(if recent_failure { Decision::Skip("Letzter Versuch fehlgeschlagen, neuer Versuch später") } else { Decision::Run })
+    if let Some((count, failed)) = failures.filter(|(_, f)| slot.is_some_and(|s| *f >= s)) {
+        let next = failed + chrono::Duration::minutes(retry_delay_minutes(count));
+        if now < next {
+            return Ok(Decision::Wait(next));
+        }
+    }
+    Ok(Decision::Run)
 }
 
 /// Ganze Tage seit dem letzten Erfolg, wenn die Warnschwelle erreicht ist.
@@ -46,6 +58,25 @@ pub fn overdue_days(now: NaiveDateTime, last_success: Option<NaiveDateTime>, war
 /// Die Meldung höchstens einmal je 24 Stunden.
 pub fn notice_allowed(last_notice: Option<NaiveDateTime>, now: NaiveDateTime) -> bool {
     last_notice.is_none_or(|t| now.signed_duration_since(t).num_hours() >= 24)
+}
+
+/// Meldet „Backup überfällig“, wenn die Warnschwelle erreicht ist (höchstens einmal je 24 Stunden). Gelang noch
+/// nie ein Backup, zählen die Tage ab dem Einrichten des Zeitplans. Liefert `true`, wenn gemeldet wurde.
+pub fn warn_if_overdue(now: NaiveDateTime, cfg: &Config) -> bool {
+    let last_success = config::read_last_success();
+    // Nur wenn auch ein Termin offen ist: Bei einem Zeitplan „nur montags“ ist am Freitag nichts überfällig
+    if !schedule::last_slot(now, &cfg.schedule_times, &cfg.schedule_days).is_ok_and(|slot| schedule::is_due(last_success, slot)) {
+        return false;
+    }
+    let since = last_success.or_else(schedule::activated_at);
+    match overdue_days(now, since, cfg.warn_after_days).filter(|_| notice_allowed(config::read_overdue_notice(), now)) {
+        Some(days) => {
+            crate::notify::backup_overdue(days);
+            config::write_overdue_notice();
+            true
+        }
+        None => false,
+    }
 }
 
 /// Wartet kurz auf das NAS (Netz nach dem Aufwachen); `false`, wenn es nicht erreichbar wird.
@@ -61,31 +92,63 @@ fn wait_reachable(host: &str, attempts: u32, wait: std::time::Duration) -> bool 
     false
 }
 
+/// Was täte ein Zeitplan-Lauf jetzt? Für „Zeitplan prüfen“ im Fenster; startet kein Backup.
+pub fn dry_run(cfg: &Config) -> String {
+    if !cfg.is_ready() {
+        return "Warnung: Nicht eingerichtet (NAS-Adresse, Freigabe und mindestens ein Quellordner sind nötig).".into();
+    }
+    let now = chrono::Local::now().naive_local();
+    match decide(now, cfg, config::read_last_success(), config::read_pause(), config::read_schedule_failures()) {
+        Err(e) => format!("FEHLER: {e:#}"),
+        Ok(Decision::Skip(why)) => format!("{why} – ein Zeitplan-Lauf würde jetzt nichts tun."),
+        Ok(Decision::Wait(next)) => format!("Warnung: Backup fällig, aber der letzte Versuch schlug fehl – nächster Versuch ab {}.", next.format("%H:%M")),
+        Ok(Decision::Run) if crate::smb::host_reachable(&cfg.host) => "Backup fällig und NAS erreichbar – der nächste Zeitplan-Lauf sichert.".into(),
+        Ok(Decision::Run) => format!("Warnung: Backup fällig, aber NAS {} nicht erreichbar (Port 445) – der Zeitplan versucht es weiter.", cfg.host),
+    }
+}
+
+/// Hält eine Entscheidung fest: auf der Konsole (Linux: Journal) und in `schedule.log` für die Anzeige im Fenster.
+pub fn note(msg: &str) {
+    println!("{msg}");
+    config::append_schedule_log(msg);
+}
+
 /// Einstiegspunkt für `--scheduled`.
 pub fn run() -> Result<()> {
     let cfg = Config::load()?;
     if !cfg.is_ready() {
-        println!("Nicht eingerichtet – übersprungen.");
+        note("Nicht eingerichtet – übersprungen");
         return Ok(());
     }
     let now = chrono::Local::now().naive_local();
-    let last_success = config::read_last_success();
-    if let Decision::Skip(why) = decide(now, &cfg, last_success, config::read_pause(), config::read_last_failure())? {
-        println!("{why} – übersprungen.");
-        return Ok(());
+    match decide(now, &cfg, config::read_last_success(), config::read_pause(), config::read_schedule_failures())? {
+        Decision::Run => {}
+        Decision::Skip(why) => {
+            note(why);
+            return Ok(());
+        }
+        Decision::Wait(next) => {
+            note(&format!("Letzter Versuch fehlgeschlagen – nächster Versuch ab {}", next.format("%H:%M")));
+            warn_if_overdue(now, &cfg);
+            return Ok(());
+        }
     }
     if !wait_reachable(&cfg.host, 3, std::time::Duration::from_secs(20)) {
-        println!("NAS {} nicht erreichbar – übersprungen.", cfg.host);
-        if let Some(days) = overdue_days(now, last_success, cfg.warn_after_days).filter(|_| notice_allowed(config::read_overdue_notice(), now)) {
-            crate::notify::backup_overdue(days);
-            config::write_overdue_notice();
-        }
+        note(&format!("Backup fällig, aber NAS {} nicht erreichbar – später erneut", cfg.host));
+        warn_if_overdue(now, &cfg);
         return Ok(());
     }
     // Kurz nach dem Anmelden oder Aufwachen läuft der Schlüsselbund oft noch nicht: bis zu 4 Minuten warten, statt
     // gleich mit einem Fehler zu enden. Bleibt er aus, meldet der Lauf den Fehler wie bisher.
-    wait_store(8, std::time::Duration::from_secs(30));
-    crate::run_headless(true)
+    if !wait_store(8, std::time::Duration::from_secs(30)) {
+        note("Schlüsselbund nicht erreichbar");
+    }
+    note("Backup gestartet");
+    let result = crate::run_headless(true);
+    if result.is_err() {
+        warn_if_overdue(chrono::Local::now().naive_local(), &cfg);
+    }
+    result
 }
 
 /// Wartet auf den System-Schlüsselbund; `false`, wenn er nicht erreichbar wird.
@@ -134,11 +197,21 @@ mod tests {
 
     #[test]
     fn waits_after_failure() {
-        // Fehler um 15:30 nach dem Termin 14:00: um 16:00 warten, ab 17:30 neu versuchen
-        assert!(matches!(decide(at(4, 16, 0), &cfg(), None, None, Some(at(4, 15, 30))).unwrap(), Decision::Skip(_)));
-        assert_eq!(decide(at(4, 17, 30), &cfg(), None, None, Some(at(4, 15, 30))).unwrap(), Decision::Run);
+        // Erster Fehler um 15:30 nach dem Termin 14:00: 5 Minuten warten
+        assert_eq!(decide(at(4, 15, 32), &cfg(), None, None, Some((1, at(4, 15, 30)))).unwrap(), Decision::Wait(at(4, 15, 35)));
+        assert_eq!(decide(at(4, 15, 35), &cfg(), None, None, Some((1, at(4, 15, 30)))).unwrap(), Decision::Run);
+        // Vierter Fehler in Folge: 2 Stunden
+        assert_eq!(decide(at(4, 16, 0), &cfg(), None, None, Some((4, at(4, 15, 30)))).unwrap(), Decision::Wait(at(4, 17, 30)));
+        assert_eq!(decide(at(4, 17, 30), &cfg(), None, None, Some((4, at(4, 15, 30)))).unwrap(), Decision::Run);
         // Fehler vor dem fälligen Termin (früherer Termin) bremst nicht
-        assert_eq!(decide(at(4, 14, 5), &cfg(), None, None, Some(at(4, 13, 50))).unwrap(), Decision::Run);
+        assert_eq!(decide(at(4, 14, 5), &cfg(), None, None, Some((9, at(4, 13, 50)))).unwrap(), Decision::Run);
+        // Pause und „nicht fällig“ gehen vor
+        assert!(matches!(decide(at(4, 15, 32), &cfg(), Some(at(4, 14, 10)), None, Some((1, at(4, 15, 30)))).unwrap(), Decision::Skip(_)));
+    }
+
+    #[test]
+    fn retry_delay_grows() {
+        assert_eq!([0, 1, 2, 3, 4, 50].map(retry_delay_minutes), [0, 5, 15, 60, 120, 120]);
     }
 
     #[test]

@@ -2,6 +2,31 @@
 
 ## [Unveröffentlicht]
 
+## [0.3.28]
+
+### Behoben
+- Zeitplan: Nach einem Fehlschlag wartete er pauschal zwei Stunden, auch bei einer kurzen Störung direkt nach dem Aufwachen („Netzwerkname wurde nicht gefunden“). War der Rechner danach nur kurz an, gab es kein Backup. Jetzt wird gestaffelt wiederholt: nach 5 Minuten, dann nach 15 Minuten, einer Stunde und danach alle zwei Stunden.
+- Ein abgebrochenes Backup (Fenster oder Zeitplan-Lauf) zählt nicht mehr als Fehlschlag: keine Fehlermeldung, keine Wartezeit, im Verlauf und unter „Letzter Lauf“ steht „Abgebrochen“. Auch ein Fehler bei einem von Hand gestarteten Backup bremst den Zeitplan nicht mehr.
+- Windows: Die Bedingung „nur bei Netzwerk“ am Task ist entfernt. Stand das WLAN bei Anmeldung oder Entsperren noch nicht, verfiel der Start, und der nächste Versuch kam erst bis zu 30 Minuten später. Ob das NAS erreichbar ist, prüft das Programm ohnehin selbst.
+- Windows: „Zeitplan aktivieren“ ersetzt den Task, statt ihn vorher zu löschen. Scheiterte das Anlegen, blieb bisher gar kein Zeitplan übrig.
+- Linux: „Zeitplan entfernen“ löscht auch die Timer- und Dienst-Datei. Vorher blieb sie liegen, und eine Programm-Aktualisierung (oder ein umbenanntes AppImage) schaltete den entfernten Zeitplan wieder ein.
+- Linux: Eine Freigabe, die noch eingebunden ist, aber nicht mehr antwortet (nach Standby oder Netzwechsel), wird erkannt, getrennt und neu eingebunden. Vorher lief restic auf den toten Mount und der Lauf scheiterte.
+- Linux: Nach „Zeitplan aktivieren“ wird der Timer neu gestartet, damit geänderte Uhrzeiten sicher gelten. Wurde die Programmdatei im laufenden Betrieb ersetzt, trägt der Zeitplan nicht mehr den Pfad mit „ (deleted)“ ein.
+- Die Meldung „Backup überfällig“ kam nur, wenn das NAS nicht erreichbar war. Jetzt auch bei wiederholten Fehlschlägen, wenn noch nie ein Backup gelang (gezählt ab dem Einrichten des Zeitplans) und wenn der Zeitplan gar nicht startet: Die App prüft das im Hintergrund selbst alle 10 Minuten. Weiterhin höchstens einmal täglich und nicht während einer Pause.
+
+### Geändert
+- Der Zeitplan startet das Programm alle 10 statt alle 30 Minuten. Windows zusätzlich beim Aufwachen aus dem Standby, sobald ein Netzwerk verbunden ist, und ein zweites Mal 2 Minuten nach der Anmeldung. Ein verpasstes Backup wird so deutlich schneller nachgeholt.
+- Schlägt ein Zeitplan-Lauf fehl, erscheint die Desktop-Meldung erst beim zweiten Fehlschlag in Folge (der erste wird nach 5 Minuten wiederholt). Im Verlauf steht er sofort.
+- Windows: Ein Zeitplan-Lauf darf 72 statt 12 Stunden dauern (großes erstes Backup). Die Trigger nennen den Benutzer mit Domäne.
+- Wird die App aus einem Entwicklungs-Build (Cargo-Ordner `debug` oder `release`) gestartet, biegt sie den Zeitplan nicht mehr auf diese Datei um, solange die eingetragene Programmdatei existiert.
+- Bestehende Zeitpläne werden beim nächsten Start der App automatisch auf die neuen Trigger umgestellt.
+
+### Neu
+- Zeitplan-Tab, Karte „Diagnose“: Zustand des Tasks bzw. Timers im System, eingetragene Programmdatei (mit Warnung, falls sie fehlt), letzter Start mit Ergebnis, letztes Backup, nächster Termin, Fehlversuche mit Zeitpunkt des nächsten Versuchs und unter Linux ein Hinweis auf den fehlenden fstab-Eintrag. „Zeitplan prüfen“ zeigt, was ein Zeitplan-Lauf jetzt täte, ohne ein Backup zu starten.
+- Zeitplan-Protokoll (`schedule.log` im Datenverzeichnis): Jede Entscheidung des Zeitplans steht dort mit Uhrzeit („Kein Backup fällig“, „NAS nicht erreichbar“, „pausiert“, „Backup gestartet“ …). Die letzten Einträge zeigt die Karte „Diagnose“. Unter Windows war bisher nicht nachvollziehbar, warum ein Lauf nichts tat.
+- Windows: Option „Rechner zu den Uhrzeiten aus dem Standby wecken“ (Zeitplan → Laptop und Pause, Standard aus).
+- Linux: „Zeitplan aktivieren“ warnt, wenn der fstab-Eintrag fehlt, den geplante Läufe zum Einbinden brauchen.
+
 ## [0.3.27]
 
 ### Behoben

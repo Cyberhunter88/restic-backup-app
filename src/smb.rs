@@ -56,7 +56,7 @@ fn mount_escape(s: &str) -> String {
 }
 
 #[cfg(unix)]
-pub use linux::{fstab_line, mount, unmount, write_credentials};
+pub use linux::{fstab_line, mount, scheduled_mount_ready, unmount, write_credentials};
 #[cfg(windows)]
 pub use windows::{mount, unmount};
 
@@ -116,12 +116,36 @@ mod linux {
             .unwrap_or(false)
     }
 
+    /// Können geplante Läufe die Freigabe ohne Rückfrage einbinden (fstab-Eintrag vorhanden)?
+    pub fn scheduled_mount_ready() -> bool {
+        mount_point().is_ok_and(|mp| in_fstab(&mp))
+    }
+
+    /// Antwortet die eingebundene Freigabe noch? Ist der Server weg (Standby, anderes Netz), bleibt der Eintrag in
+    /// `/proc/mounts` stehen und jeder Zugriff hängt lange; deshalb läuft der Test mit Zeitlimit in einem eigenen Thread.
+    fn mount_alive(mp: &std::path::Path) -> bool {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let p = mp.to_path_buf();
+        std::thread::spawn(move || {
+            let ok = std::fs::read_dir(&p).is_ok_and(|mut d| d.next().is_none_or(|e| e.is_ok()));
+            let _ = tx.send(ok);
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap_or(false)
+    }
+
     /// Bindet die Freigabe per `mount.cifs` (über pkexec für Root-Rechte) ein.
     /// Liefert `true`, wenn die App die Freigabe neu eingebunden hat.
     pub fn mount(cfg: &Config, password: &str) -> Result<bool> {
         let mp = mount_point()?;
         if is_mounted(&mp) {
-            return Ok(false);
+            if mount_alive(&mp) {
+                return Ok(false);
+            }
+            // Toter Mount: „lazy“ aushängen (ein normales umount hinge ebenfalls) und unten neu einbinden
+            let out = if in_fstab(&mp) { Command::new("umount").arg("-l").arg(&mp).output() } else { Command::new("pkexec").args(["umount", "-l"]).arg(&mp).output() }.context("umount konnte nicht gestartet werden")?;
+            if !out.status.success() {
+                bail!("Die Freigabe ist eingebunden, antwortet aber nicht, und ließ sich nicht trennen: {}", String::from_utf8_lossy(&out.stderr).trim());
+            }
         }
         // fstab-Eintrag mit `user`: Mount ohne Root und ohne Dialog (auch für Zeitplan)
         if in_fstab(&mp) {

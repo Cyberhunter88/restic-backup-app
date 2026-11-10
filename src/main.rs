@@ -31,10 +31,12 @@ struct Cli {
     autostart: bool,
 }
 
-/// Backup ohne GUI. `quiet_if_busy`: Läuft schon ein Backup, endet der Zeitplan-Lauf still (kein Fehler).
+/// Backup ohne GUI. `scheduled`: Lauf des Zeitplans. Läuft schon ein Backup, endet er still (kein Fehler); ein
+/// Fehlschlag zählt für die gestaffelte Wartezeit und wird erst beim zweiten in Folge als Desktop-Meldung
+/// gezeigt (eine kurze Störung nach dem Aufwachen ist meist beim nächsten Versuch vorbei).
 /// Der Fortschritt geht in `run-status.txt` und ein Abbruch-Wunsch des Fensters (`cancel.flag`) wird beachtet,
 /// damit die App einen Zeitplan-Lauf anzeigen und abbrechen kann.
-fn run_headless(quiet_if_busy: bool) -> anyhow::Result<()> {
+fn run_headless(scheduled: bool) -> anyhow::Result<()> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     let cfg = config::Config::load()?;
@@ -83,17 +85,43 @@ fn run_headless(quiet_if_busy: bool) -> anyhow::Result<()> {
     finished.store(true, Ordering::Relaxed);
     // Das laufende Backup nicht mit einer Fehlermeldung überschreiben
     if result.as_ref().is_err_and(|e| e.downcast_ref::<job::AlreadyRunning>().is_some()) {
+        if scheduled {
+            scheduled::note("Es läuft bereits ein Backup");
+            return Ok(());
+        }
         println!("Es läuft bereits ein Backup.");
-        return if quiet_if_busy { Ok(()) } else { result.map(|_| ()) };
+        return result.map(|_| ());
     }
-    match &result {
-        Ok(o) => lines.push(if o.warnings { "Backup mit Warnungen abgeschlossen." } else { "Backup abgeschlossen." }.into()),
-        Err(e) => lines.push(format!("FEHLER: {e:#}")),
+    // Ein Abbruch aus dem Fenster ist kein Fehlschlag: keine Fehlermeldung, keine Wartezeit für den Zeitplan
+    let outcome = match &result {
+        Ok(_) => config::RunResult::Ok,
+        Err(_) if cancel.load(Ordering::Relaxed) => config::RunResult::Cancelled,
+        Err(_) => config::RunResult::Failed,
+    };
+    let error = result.as_ref().err().map(|e| format!("{e:#}"));
+    lines.push(match (&result, outcome) {
+        (Ok(o), _) => if o.warnings { "Backup mit Warnungen abgeschlossen." } else { "Backup abgeschlossen." }.into(),
+        (Err(_), config::RunResult::Cancelled) => "Backup abgebrochen.".to_string(),
+        (Err(e), _) => format!("FEHLER: {e:#}"),
+    });
+    let failures = if scheduled && outcome == config::RunResult::Failed { config::record_schedule_failure() } else { 0 };
+    if outcome != config::RunResult::Cancelled && !(scheduled && failures == 1) {
+        notify::backup_finished(result.as_ref().is_ok_and(|o| o.warnings), error.as_deref(), cfg.notify_success);
     }
-    notify::backup_finished(result.as_ref().is_ok_and(|o| o.warnings), result.as_ref().err().map(|e| format!("{e:#}")).as_deref(), cfg.notify_success);
-    let _ = config::write_last_run(result.is_ok(), &lines);
+    let _ = config::write_last_run(outcome, &lines);
     for l in &lines {
         println!("{l}");
+    }
+    if scheduled {
+        // Die erste Zeile reicht für das Zeitplan-Protokoll, alles Weitere steht in `last-run.log`
+        config::append_schedule_log(&match (&error, outcome) {
+            (None, _) => lines.last().cloned().unwrap_or_default(),
+            (Some(_), config::RunResult::Cancelled) => "Backup abgebrochen".to_string(),
+            (Some(e), _) => format!("Backup fehlgeschlagen ({failures}. Versuch): {}", e.lines().next().unwrap_or(e)),
+        });
+        if outcome == config::RunResult::Cancelled {
+            return Ok(());
+        }
     }
     result.map(|_| ())
 }

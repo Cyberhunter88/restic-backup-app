@@ -201,7 +201,7 @@ pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log
         let outcome = backup_sources(&r, cfg, &host, cancel, &mut log, on_event)?;
         let mut outcome = outcome;
         // Der Snapshot ist schon geschrieben: scheitert nur das Aufräumen (z. B. Repo von einem anderen Rechner
-        // gesperrt), ist das eine Warnung. Als Fehler würde der Zeitplan alle 30 Minuten neu sichern.
+        // gesperrt), ist das eine Warnung. Als Fehler würde der Zeitplan das Backup wiederholen.
         log("Räume alte Snapshots auf …".into());
         // Prune (Index und Trees über SMB lesen, Packs umschreiben) ist langsam: nur alle paar Tage
         if host.is_empty() {
