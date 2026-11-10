@@ -360,11 +360,90 @@ impl RunLock {
         std::fs::create_dir_all(&d)?;
         let f = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(d.join("run.lock"))?;
         match f.try_lock() {
-            Ok(()) => Ok(Some(Self { _file: f })),
+            Ok(()) => {
+                // Reste eines früheren Laufs (Absturz) dürfen weder angezeigt werden noch den neuen Lauf abbrechen
+                let _ = std::fs::remove_file(d.join(RUN_STATUS_FILE));
+                let _ = std::fs::remove_file(d.join(CANCEL_FLAG_FILE));
+                Ok(Some(Self { _file: f }))
+            }
             Err(std::fs::TryLockError::WouldBlock) => Ok(None),
             Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
         }
     }
+
+    /// Läuft gerade ein Backup (in diesem oder einem anderen Prozess)? Hält die Sperre nur kurz zur Probe.
+    pub fn is_held() -> bool {
+        let Ok(d) = data_dir() else { return false };
+        let Ok(f) = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(d.join("run.lock")) else {
+            return false;
+        };
+        matches!(f.try_lock(), Err(std::fs::TryLockError::WouldBlock))
+    }
+}
+
+impl Drop for RunLock {
+    fn drop(&mut self) {
+        if let Ok(d) = data_dir() {
+            let _ = std::fs::remove_file(d.join(RUN_STATUS_FILE));
+            let _ = std::fs::remove_file(d.join(CANCEL_FLAG_FILE));
+        }
+    }
+}
+
+const RUN_STATUS_FILE: &str = "run-status.txt";
+const CANCEL_FLAG_FILE: &str = "cancel.flag";
+
+/// Zustand eines Backups, das in einem anderen Prozess läuft (Zeitplan oder `--run-backup`).
+/// Der Prozess schreibt ihn in `run-status.txt`, solange er die `RunLock` hält.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RunStatus {
+    pub started: Option<chrono::NaiveDateTime>,
+    /// 0.0 bis 1.0
+    pub percent: f32,
+    /// Aktueller Schritt
+    pub text: String,
+}
+
+fn format_run_status(s: &RunStatus) -> String {
+    let started = s.started.map(|t| t.format(TS_FMT).to_string()).unwrap_or_default();
+    format!("{started}\t{:.4}\t{}\n", s.percent, s.text.replace(['\t', '\n', '\r'], " "))
+}
+
+fn parse_run_status(text: &str) -> RunStatus {
+    let mut parts = text.trim_end().splitn(3, '\t');
+    let started = parts.next().and_then(|t| chrono::NaiveDateTime::parse_from_str(t, TS_FMT).ok());
+    let percent = parts.next().and_then(|p| p.parse::<f32>().ok()).unwrap_or(0.0).clamp(0.0, 1.0);
+    RunStatus { started, percent, text: parts.next().unwrap_or("").to_string() }
+}
+
+/// Meldet den Fortschritt des laufenden Backups an andere Prozesse (die Fenster-Anzeige).
+/// Nur aufrufen, solange die eigene `RunLock` gehalten wird.
+pub fn write_run_status(s: &RunStatus) {
+    if let Ok(d) = data_dir() {
+        let _ = write_atomic(&d.join(RUN_STATUS_FILE), &format_run_status(s));
+    }
+}
+
+/// Läuft ein Backup in einem anderen Prozess? Nur gültig, wenn dieser Prozess selbst keins hält.
+pub fn read_external_run() -> Option<RunStatus> {
+    if !RunLock::is_held() {
+        return None;
+    }
+    // Die Statusdatei kann kurz fehlen (Lauf startet oder endet gerade): dann ohne Angaben anzeigen
+    let status = data_dir().ok().and_then(|d| std::fs::read_to_string(d.join(RUN_STATUS_FILE)).ok()).map(|t| parse_run_status(&t));
+    Some(status.unwrap_or_default())
+}
+
+/// Bittet den laufenden Backup-Prozess (Zeitplan), abzubrechen.
+pub fn request_cancel() {
+    if let Ok(d) = data_dir() {
+        let _ = std::fs::write(d.join(CANCEL_FLAG_FILE), "");
+    }
+}
+
+/// Wurde der Abbruch angefordert? Löscht die Anforderung.
+pub fn take_cancel_request() -> bool {
+    data_dir().is_ok_and(|d| std::fs::remove_file(d.join(CANCEL_FLAG_FILE)).is_ok())
 }
 
 /// Sperre für das Fenster: verhindert, dass die App zweimal geöffnet wird (Windows und Linux).
@@ -520,6 +599,18 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_status_roundtrip_and_robust() {
+        let t = chrono::NaiveDate::from_ymd_opt(2026, 11, 10).unwrap().and_hms_opt(16, 37, 5).unwrap();
+        let s = RunStatus { started: Some(t), percent: 0.42, text: "Sichere\tDateien\n".into() };
+        let back = parse_run_status(&format_run_status(&s));
+        assert_eq!(back, RunStatus { started: Some(t), percent: 0.42, text: "Sichere Dateien".into() });
+        // Kaputte oder leere Datei: keine Panik, Standardwerte
+        assert_eq!(parse_run_status(""), RunStatus::default());
+        assert_eq!(parse_run_status("müll"), RunStatus { text: String::new(), ..Default::default() });
+        assert_eq!(parse_run_status("\t7.5\tx").percent, 1.0);
+    }
 
     #[test]
     fn common_excludes_per_system() {
