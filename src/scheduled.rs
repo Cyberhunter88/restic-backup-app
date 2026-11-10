@@ -82,37 +82,24 @@ pub fn run() -> Result<()> {
         }
         return Ok(());
     }
-    if let Some(result) = retry_if_store_unavailable() {
-        return result;
-    }
+    // Kurz nach dem Anmelden oder Aufwachen läuft der Schlüsselbund oft noch nicht: bis zu 4 Minuten warten, statt
+    // gleich mit einem Fehler zu enden. Bleibt er aus, meldet der Lauf den Fehler wie bisher.
+    wait_store(8, std::time::Duration::from_secs(30));
     crate::run_headless(true)
 }
 
-/// So oft startet sich der Zeitplan-Lauf neu, wenn der Schlüsselbund noch nicht bereit ist.
-const STORE_RETRIES: u32 = 8;
-const STORE_RETRY_ENV: &str = "RESTIC_BACKUP_APP_STORE_RETRY";
-
-/// Kurz nach dem Anmelden oder Aufwachen läuft der Schlüsselbund (Secret Service / KWallet) oft noch nicht. Das
-/// Ergebnis der Initialisierung merkt sich die Bibliothek für den ganzen Prozess, ein erneuter Versuch im selben
-/// Prozess hilft also nicht. Deshalb startet sich der Lauf neu (neuer Prozess, neuer Versuch), statt mit
-/// „No default store has been set“ zu scheitern. `None`: Schlüsselbund ist bereit (oder alle Versuche sind verbraucht,
-/// dann meldet der Lauf den Fehler wie bisher).
-fn retry_if_store_unavailable() -> Option<Result<()>> {
-    if crate::secrets::store_ready() {
-        return None;
+/// Wartet auf den System-Schlüsselbund; `false`, wenn er nicht erreichbar wird.
+fn wait_store(attempts: u32, wait: std::time::Duration) -> bool {
+    for i in 1..=attempts {
+        if crate::secrets::store_ready() {
+            return true;
+        }
+        if i < attempts {
+            println!("Schlüsselbund noch nicht bereit – neuer Versuch in {} s ({i}/{attempts}).", wait.as_secs());
+            std::thread::sleep(wait);
+        }
     }
-    let attempt: u32 = std::env::var(STORE_RETRY_ENV).ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-    if attempt >= STORE_RETRIES {
-        return None;
-    }
-    println!("Schlüsselbund noch nicht bereit – neuer Versuch in 30 s ({}/{STORE_RETRIES}).", attempt + 1);
-    std::thread::sleep(std::time::Duration::from_secs(30));
-    let status = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg("--scheduled").env(STORE_RETRY_ENV, (attempt + 1).to_string()).status());
-    Some(match status {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(anyhow::anyhow!("Wiederholter Zeitplan-Lauf beendet mit {s}")),
-        Err(e) => Err(e.into()),
-    })
+    false
 }
 
 #[cfg(test)]
