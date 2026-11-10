@@ -64,6 +64,9 @@ pub struct App {
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     busy: bool,
+    /// Ein Backup läuft in einem anderen Prozess (Zeitplan); die App zeigt es an und kann es abbrechen
+    external_run: Option<crate::config::RunStatus>,
+    external_checked: std::time::Instant,
     progress: f32,
     /// Text statt Balken, wenn die Gesamtmenge unbekannt ist (`--no-scan`)
     progress_text: String,
@@ -150,6 +153,8 @@ impl App {
             tx,
             rx,
             busy: false,
+            external_run: None,
+            external_checked: std::time::Instant::now(),
             progress: 0.0,
             progress_text: String::new(),
             log: vec![],
@@ -214,7 +219,7 @@ impl App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
-                TrayCmd::Backup if !self.busy && self.cfg.is_ready() => self.start_backup(ctx),
+                TrayCmd::Backup if !self.busy && self.external_run.is_none() && self.cfg.is_ready() => self.start_backup(ctx),
                 TrayCmd::Backup => {}
                 TrayCmd::Pause => self.set_pause(Some(ui::tomorrow_morning(chrono::Local::now().naive_local()))),
                 TrayCmd::Resume => self.set_pause(None),
@@ -273,6 +278,30 @@ impl App {
             f(tx);
             ctx.request_repaint();
         });
+    }
+
+    /// Sieht nach, ob ein Zeitplan-Lauf (anderer Prozess) gerade sichert. Endet er, werden Verlauf und Übersicht neu geladen.
+    fn poll_external_run(&mut self) {
+        if self.busy {
+            // Die eigene Sperre würde als „fremd“ gelten
+            self.external_run = None;
+            return;
+        }
+        if self.external_checked.elapsed() < std::time::Duration::from_secs(2) {
+            return;
+        }
+        self.external_checked = std::time::Instant::now();
+        let now = crate::config::read_external_run();
+        if self.external_run.is_some() && now.is_none() {
+            self.last_run = crate::config::read_last_run();
+            self.history = crate::config::read_history(8);
+            self.last_check = crate::config::read_last_check();
+            self.snaps_loaded = false;
+            if self.overview.is_some() {
+                self.pending_overview = true;
+            }
+        }
+        self.external_run = now;
     }
 
     fn poll(&mut self) {
@@ -499,7 +528,7 @@ impl App {
                     }
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_enabled_ui(!self.busy, |ui| {
+                    ui.add_enabled_ui(!self.busy && self.external_run.is_none(), |ui| {
                         if ui.add(ui::primary("▶  Backup jetzt starten").min_size(egui::vec2(210.0, 44.0))).clicked() {
                             self.start_backup(&ctx);
                         }
@@ -568,6 +597,25 @@ impl App {
                     }
                     if ui.button("Abbrechen").clicked() {
                         self.cancel.store(true, Ordering::Relaxed);
+                    }
+                });
+            });
+        }
+
+        // Backup in einem anderen Prozess (Zeitplan): anzeigen und abbrechen lassen
+        if let Some(run) = self.external_run.clone() {
+            let title = match run.started {
+                Some(t) => format!("Zeitplan-Backup läuft (seit {})", t.format("%H:%M")),
+                None => "Zeitplan-Backup läuft".to_string(),
+            };
+            ui::card(ui, Some(&title), |ui| {
+                if !run.text.is_empty() {
+                    ui::hint(ui, &run.text);
+                }
+                ui.horizontal(|ui| {
+                    ui.add(egui::ProgressBar::new(run.percent).show_percentage().desired_width(ui.available_width() - 110.0));
+                    if ui.button("Abbrechen").clicked() {
+                        crate::config::request_cancel();
                     }
                 });
             });
@@ -1286,9 +1334,13 @@ impl eframe::App for App {
     // `logic` läuft auch bei verstecktem Fenster (Tray): Meldungen der Threads und Tray-Menü werden hier verarbeitet
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
+        self.poll_external_run();
         // Meldungen der Threads kommen ohne eigenen Repaint an: im Takt nachsehen, solange etwas läuft
         if self.busy {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        } else {
+            // Einen Zeitplan-Lauf bemerken, auch wenn das Fenster still steht oder versteckt ist
+            ctx.request_repaint_after(std::time::Duration::from_secs(if self.external_run.is_some() { 1 } else { 3 }));
         }
         if self.pending_overview && !self.busy {
             self.pending_overview = false;

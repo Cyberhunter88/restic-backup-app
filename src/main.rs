@@ -32,10 +32,52 @@ struct Cli {
 }
 
 /// Backup ohne GUI. `quiet_if_busy`: Läuft schon ein Backup, endet der Zeitplan-Lauf still (kein Fehler).
+/// Der Fortschritt geht in `run-status.txt` und ein Abbruch-Wunsch des Fensters (`cancel.flag`) wird beachtet,
+/// damit die App einen Zeitplan-Lauf anzeigen und abbrechen kann.
 fn run_headless(quiet_if_busy: bool) -> anyhow::Result<()> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     let cfg = config::Config::load()?;
     let mut lines: Vec<String> = vec![];
-    let result = job::run_backup(&cfg, false, &std::sync::atomic::AtomicBool::new(false), |m| lines.push(m), |_| {});
+    let cancel = Arc::new(AtomicBool::new(false));
+    // Erst wenn der Lauf die Sperre hält (erste Protokollzeile), gehören Status und Abbruch-Datei ihm; ein zweiter
+    // Prozess, der nur „läuft bereits“ meldet, darf weder den Status überschreiben noch den Abbruch wegnehmen
+    let holding = Arc::new(AtomicBool::new(false));
+    let finished = Arc::new(AtomicBool::new(false));
+    {
+        let (cancel, holding, finished) = (cancel.clone(), holding.clone(), finished.clone());
+        std::thread::spawn(move || {
+            while !finished.load(Ordering::Relaxed) {
+                if holding.load(Ordering::Relaxed) && config::take_cancel_request() {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        });
+    }
+    let status = std::cell::RefCell::new(config::RunStatus { started: Some(chrono::Local::now().naive_local()), ..Default::default() });
+    let result = job::run_backup(
+        &cfg,
+        false,
+        &cancel,
+        |m| {
+            holding.store(true, Ordering::Relaxed);
+            status.borrow_mut().text.clone_from(&m);
+            config::write_run_status(&status.borrow());
+            lines.push(m);
+        },
+        |e| {
+            // Nur bei ganzen Prozentschritten schreiben (restic meldet mehrmals pro Sekunde)
+            if let restic::BackupEvent::Progress { percent, .. } = e {
+                let mut s = status.borrow_mut();
+                if (percent * 100.0).floor() != f64::from(s.percent * 100.0).floor() {
+                    s.percent = percent as f32;
+                    config::write_run_status(&s);
+                }
+            }
+        },
+    );
+    finished.store(true, Ordering::Relaxed);
     // Das laufende Backup nicht mit einer Fehlermeldung überschreiben
     if result.as_ref().is_err_and(|e| e.downcast_ref::<job::AlreadyRunning>().is_some()) {
         println!("Es läuft bereits ein Backup.");

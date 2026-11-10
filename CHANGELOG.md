@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unveröffentlicht]
+
+### Behoben
+- Ein Backup, das der Zeitplan gestartet hat, erkennt die App jetzt: Auf dem Tab „Backup“ erscheint „Zeitplan-Backup läuft“ mit Schritt und Fortschritt, „Backup jetzt starten“ ist solange gesperrt (statt „Es läuft bereits ein Backup“ als Fehler). Nach dem Ende laden Letzter Lauf, Verlauf und Snapshots sich neu. Funktioniert unter Linux und Windows (Dateisperre und Statusdatei im Datenverzeichnis).
+- „Abbrechen“ stoppt auch ein Zeitplan-Lauf (über die Datei `cancel.flag`, ohne Signale).
+- Linux: Ist der Schlüsselbund kurz nach Anmeldung oder Aufwachen noch nicht bereit („No default store has been set“), startet sich der Zeitplan-Lauf bis zu 8× im Abstand von 30 s neu, statt sofort mit Fehler zu enden.
+
 ## [0.3.25]
 
 ### Geändert

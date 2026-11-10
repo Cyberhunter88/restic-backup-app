@@ -18,6 +18,11 @@ impl Secret {
     }
 }
 
+/// Ist der System-Schlüsselbund nutzbar? Das Ergebnis der Initialisierung gilt für den ganzen Prozess.
+pub fn store_ready() -> bool {
+    Entry::store_status().is_ok()
+}
+
 pub fn get(s: Secret) -> Result<Option<String>> {
     match Entry::new(SERVICE, s.key())?.get_password() {
         Ok(p) => Ok(Some(p)),
