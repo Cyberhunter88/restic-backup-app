@@ -41,6 +41,8 @@ pub struct Config {
     pub schedule_days: [bool; 7],
     /// Zeitplan-Läufe nur am Netzteil starten (Laptop)
     pub only_on_ac: bool,
+    /// Rechner für einen geplanten Termin aus dem Standby wecken (nur Windows)
+    pub wake_to_run: bool,
     /// Meldung, wenn so viele Tage kein Backup gelungen ist (0 = aus)
     pub warn_after_days: u32,
     /// Auch nach einem erfolgreichen Lauf eine Desktop-Meldung senden (sonst nur bei Warnung/Fehler)
@@ -82,6 +84,7 @@ impl Default for Config {
             schedule_times: vec!["02:00".into()],
             schedule_days: [true; 7],
             only_on_ac: false,
+            wake_to_run: false,
             warn_after_days: 3,
             notify_success: false,
             close_to_tray: true,
@@ -303,9 +306,77 @@ pub fn read_last_success() -> Option<chrono::NaiveDateTime> {
     read_ts("last-success.txt")
 }
 
-/// Zeitpunkt des letzten fehlgeschlagenen Backups (der Zeitplan wartet danach eine Weile).
-pub fn read_last_failure() -> Option<chrono::NaiveDateTime> {
-    read_ts("last-failure.txt")
+const SCHEDULE_FAILURES_FILE: &str = "schedule-failures.txt";
+
+/// Liegt der letzte Fehlschlag länger zurück, beginnt die Zählung neu (der Fehler von gestern soll die
+/// Wartezeit heute nicht gleich auf das Maximum setzen).
+const FAILURE_STREAK_HOURS: i64 = 6;
+
+fn parse_schedule_failures(text: &str) -> Option<(u32, chrono::NaiveDateTime)> {
+    let (n, t) = text.trim().split_once('\t')?;
+    Some((n.parse().ok()?, chrono::NaiveDateTime::parse_from_str(t, TS_FMT).ok()?))
+}
+
+/// Zählerstand nach einem weiteren Fehlschlag zum Zeitpunkt `now`.
+fn next_failure_count(prev: Option<(u32, chrono::NaiveDateTime)>, now: chrono::NaiveDateTime) -> u32 {
+    match prev {
+        Some((n, t)) if now.signed_duration_since(t).num_hours() < FAILURE_STREAK_HOURS => n.saturating_add(1),
+        _ => 1,
+    }
+}
+
+/// Fehlgeschlagene Zeitplan-Läufe in Folge und der Zeitpunkt des letzten (der Zeitplan wartet danach gestaffelt).
+pub fn read_schedule_failures() -> Option<(u32, chrono::NaiveDateTime)> {
+    parse_schedule_failures(&std::fs::read_to_string(data_dir().ok()?.join(SCHEDULE_FAILURES_FILE)).ok()?)
+}
+
+/// Verbucht einen fehlgeschlagenen Zeitplan-Lauf und liefert, der wievielte in Folge es ist.
+pub fn record_schedule_failure() -> u32 {
+    let t = now();
+    let n = next_failure_count(read_schedule_failures(), t);
+    if let Ok(d) = data_dir() {
+        let _ = std::fs::create_dir_all(&d);
+        let _ = write_atomic(&d.join(SCHEDULE_FAILURES_FILE), &format!("{n}\t{}\n", t.format(TS_FMT)));
+    }
+    n
+}
+
+pub fn clear_schedule_failures() {
+    if let Ok(d) = data_dir() {
+        let _ = std::fs::remove_file(d.join(SCHEDULE_FAILURES_FILE));
+    }
+}
+
+/// So viele Zeilen behält das Zeitplan-Protokoll.
+const SCHEDULE_LOG_MAX: usize = 200;
+
+/// Hängt `msg` an. Wiederholt sich die letzte Meldung, bekommt sie nur den neuen Zeitstempel: Der Zeitplan
+/// startet alle paar Minuten, „nicht fällig“ soll das Protokoll nicht füllen.
+fn push_schedule_log(lines: &mut Vec<String>, ts: &str, msg: &str) {
+    let msg = msg.replace(['\t', '\n', '\r'], " ");
+    if lines.last().is_some_and(|l| l.split_once('\t').is_some_and(|(_, m)| m == msg)) {
+        lines.pop();
+    }
+    lines.push(format!("{ts}\t{msg}"));
+    let skip = lines.len().saturating_sub(SCHEDULE_LOG_MAX);
+    lines.drain(..skip);
+}
+
+/// Schreibt eine Entscheidung des Zeitplan-Laufs nach `schedule.log` (unter Windows hat er keine Konsole).
+pub fn append_schedule_log(msg: &str) {
+    let Ok(d) = data_dir() else { return };
+    let _ = std::fs::create_dir_all(&d);
+    let p = d.join("schedule.log");
+    let mut lines: Vec<String> = std::fs::read_to_string(&p).unwrap_or_default().lines().map(String::from).collect();
+    push_schedule_log(&mut lines, &now().format(TS_FMT).to_string(), msg);
+    let _ = write_atomic(&p, &(lines.join("\n") + "\n"));
+}
+
+/// Die letzten `n` Einträge des Zeitplan-Protokolls als `(Zeit, Meldung)`, neueste zuerst.
+pub fn read_schedule_log(n: usize) -> Vec<(String, String)> {
+    let Ok(d) = data_dir() else { return vec![] };
+    let text = std::fs::read_to_string(d.join("schedule.log")).unwrap_or_default();
+    text.lines().rev().take(n).filter_map(|l| l.split_once('\t')).map(|(t, m)| (t.to_string(), m.to_string())).collect()
 }
 
 /// Bis wann der Zeitplan pausiert ist (falls gesetzt).
@@ -493,10 +564,22 @@ pub struct HistoryEntry {
 
 const HISTORY_MAX: usize = 200;
 
-fn append_history(ok: bool, lines: &[String]) -> Result<()> {
+/// Ausgang eines Backup-Laufs. Ein Abbruch durch den Nutzer ist kein Fehlschlag.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RunResult {
+    Ok,
+    Failed,
+    Cancelled,
+}
+
+fn append_history(result: RunResult, lines: &[String]) -> Result<()> {
     let p = history_path()?;
     let summary = lines.iter().rev().find(|l| l.starts_with("Snapshot")).or(lines.last()).cloned().unwrap_or_default().replace(['\t', '\n'], " ");
-    let line = format!("{}\t{}\t{}", chrono::Local::now().format("%d.%m.%Y %H:%M"), if ok { "ok" } else { "fehler" }, summary);
+    let line = format!("{}\t{}\t{}", chrono::Local::now().format("%d.%m.%Y %H:%M"), match result {
+        RunResult::Ok => "ok",
+        RunResult::Failed => "fehler",
+        RunResult::Cancelled => "abbruch",
+    }, summary);
     let mut all: Vec<String> = std::fs::read_to_string(&p).unwrap_or_default().lines().map(String::from).collect();
     all.push(line);
     let skip = all.len().saturating_sub(HISTORY_MAX);
@@ -519,12 +602,21 @@ pub fn read_history(n: usize) -> Vec<HistoryEntry> {
 }
 
 /// Schreibt das Protokoll des letzten Laufs (Zeitplan oder GUI) in `last-run.log` und ergänzt den Verlauf.
-pub fn write_last_run(ok: bool, lines: &[String]) -> Result<()> {
-    let _ = append_history(ok, lines);
-    write_ts(if ok { "last-success.txt" } else { "last-failure.txt" }, now());
+/// Ein Erfolg setzt auch die Fehlerzählung des Zeitplans zurück.
+pub fn write_last_run(result: RunResult, lines: &[String]) -> Result<()> {
+    let _ = append_history(result, lines);
+    if result == RunResult::Ok {
+        write_ts("last-success.txt", now());
+        clear_schedule_failures();
+    }
     let p = last_run_path()?;
     std::fs::create_dir_all(p.parent().unwrap())?;
-    let head = format!("{} – {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), if ok { "ERFOLGREICH" } else { "FEHLER" });
+    let word = match result {
+        RunResult::Ok => "ERFOLGREICH",
+        RunResult::Failed => "FEHLER",
+        RunResult::Cancelled => "ABGEBROCHEN",
+    };
+    let head = format!("{} – {word}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
     std::fs::write(&p, format!("{head}\n{}\n", lines.join("\n")))?;
     Ok(())
 }
@@ -601,6 +693,34 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schedule_failures_format_and_streak() {
+        let t = |s: &str| chrono::NaiveDateTime::parse_from_str(s, TS_FMT).unwrap();
+        assert_eq!(parse_schedule_failures("3\t2026-11-10 20:00:00\n"), Some((3, t("2026-11-10 20:00:00"))));
+        assert_eq!(parse_schedule_failures("kaputt"), None);
+        assert_eq!(parse_schedule_failures(""), None);
+        // Folge: innerhalb von 6 Stunden zählt es weiter, danach von vorn
+        assert_eq!(next_failure_count(None, t("2026-11-10 20:00:00")), 1);
+        assert_eq!(next_failure_count(Some((2, t("2026-11-10 18:00:00"))), t("2026-11-10 20:00:00")), 3);
+        assert_eq!(next_failure_count(Some((4, t("2026-11-09 20:00:00"))), t("2026-11-10 20:00:00")), 1);
+    }
+
+    #[test]
+    fn schedule_log_dedupes_and_truncates() {
+        let mut l = vec![];
+        push_schedule_log(&mut l, "t1", "Kein Backup fällig");
+        push_schedule_log(&mut l, "t2", "Kein Backup fällig");
+        assert_eq!(l, vec!["t2\tKein Backup fällig"]);
+        push_schedule_log(&mut l, "t3", "Backup\tgestartet");
+        push_schedule_log(&mut l, "t4", "Kein Backup fällig");
+        assert_eq!(l, vec!["t2\tKein Backup fällig", "t3\tBackup gestartet", "t4\tKein Backup fällig"]);
+        for i in 0..500 {
+            push_schedule_log(&mut l, "t", &format!("Meldung {i}"));
+        }
+        assert_eq!(l.len(), SCHEDULE_LOG_MAX);
+        assert_eq!(l.last().unwrap(), "t\tMeldung 499");
+    }
 
     #[test]
     fn run_status_roundtrip_and_robust() {

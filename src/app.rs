@@ -2,9 +2,9 @@ use crate::config::Config;
 use crate::restic::{BackupEvent, DiffEntry, Node, Snapshot};
 use crate::secrets::{self, Secret};
 use crate::ui::{self, ACCENT, ERR, MUTED, OK, WARN};
-use crate::{job, schedule, update};
 #[cfg(unix)]
 use crate::smb;
+use crate::{job, schedule, update};
 use eframe::egui::{self, Frame, Margin, RichText};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -30,6 +30,10 @@ enum Msg {
     Diff(Result<Vec<DiffEntry>, String>),
     /// Ergebnis der Update-Suche: `(Version falls neuer, manuell angestoßen)`
     Update(Result<Option<String>, String>, bool),
+    /// Zustand des Zeitplans im System (Task bzw. Timer)
+    SchedStatus(schedule::Status),
+    /// Ergebnis von „Zeitplan prüfen“
+    SchedCheck(String),
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -107,6 +111,16 @@ pub struct App {
     restored_to: Option<String>,
     status: String,
     cancel: Arc<AtomicBool>,
+    /// Diagnose im Zeitplan-Tab (einmal geladen statt bei jedem Frame abgefragt)
+    sched_status: Option<schedule::Status>,
+    sched_check: String,
+    sched_log: Vec<(String, String)>,
+    sched_last_success: Option<chrono::NaiveDateTime>,
+    sched_failures: Option<(u32, chrono::NaiveDateTime)>,
+    /// Können geplante Läufe die Freigabe ohne Rückfrage einbinden (Linux: fstab-Eintrag)?
+    sched_mount_ready: bool,
+    /// Wann zuletzt auf „Backup überfällig“ geprüft wurde
+    overdue_checked: std::time::Instant,
 }
 
 /// Liste mit Löschknopf je Eintrag.
@@ -190,10 +204,17 @@ impl App {
             restored_to: None,
             status: String::new(),
             cancel: Arc::new(AtomicBool::new(false)),
+            sched_status: None,
+            sched_check: String::new(),
+            sched_log: vec![],
+            sched_last_success: None,
+            sched_failures: None,
+            sched_mount_ready: true,
+            overdue_checked: std::time::Instant::now(),
         };
         // Veralteten Zeitplan (nach Programm-Aktualisierung) still erneuern
         {
-            let (times, days, opts) = (app.cfg.schedule_times.clone(), app.cfg.schedule_days, schedule::Options { only_on_ac: app.cfg.only_on_ac });
+            let (times, days, opts) = (app.cfg.schedule_times.clone(), app.cfg.schedule_days, app.sched_opts());
             std::thread::spawn(move || {
                 let _ = schedule::refresh_if_outdated(&times, &days, opts);
             });
@@ -247,6 +268,54 @@ impl App {
         });
     }
 
+    fn sched_opts(&self) -> schedule::Options {
+        schedule::Options { only_on_ac: self.cfg.only_on_ac, wake_to_run: self.cfg.wake_to_run }
+    }
+
+    /// Dateien des Zeitplans (Protokoll, letzter Erfolg, Fehlerzähler) für die Diagnose neu lesen.
+    fn reload_schedule_files(&mut self) {
+        self.sched_log = crate::config::read_schedule_log(8);
+        self.sched_last_success = crate::config::read_last_success();
+        self.sched_failures = crate::config::read_schedule_failures();
+        #[cfg(unix)]
+        {
+            self.sched_mount_ready = smb::scheduled_mount_ready();
+        }
+    }
+
+    /// Diagnose neu laden: Dateien sofort, den Zustand im System (Task bzw. Timer) im Hintergrund, ohne `busy` zu setzen.
+    fn load_schedule_status(&mut self, ctx: &egui::Context) {
+        self.reload_schedule_files();
+        let tx = self.tx.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::SchedStatus(schedule::status()));
+            ctx.request_repaint();
+        });
+    }
+
+    /// „Zeitplan prüfen“: Was täte ein Zeitplan-Lauf jetzt? Startet kein Backup.
+    fn check_schedule(&mut self, ctx: &egui::Context) {
+        self.sched_check = "Prüfe …".into();
+        let (tx, ctx, cfg) = (self.tx.clone(), ctx.clone(), self.cfg.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::SchedCheck(crate::scheduled::dry_run(&cfg)));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Meldet „Backup überfällig“ auch dann, wenn der Zeitplan gar nicht startet (alle 10 Minuten geprüft, die
+    /// Meldung selbst erscheint höchstens einmal täglich). Nur bei eingerichtetem Zeitplan und ohne Pause.
+    fn check_overdue(&mut self) {
+        if self.overdue_checked.elapsed() < std::time::Duration::from_secs(600) {
+            return;
+        }
+        self.overdue_checked = std::time::Instant::now();
+        if !self.busy && self.external_run.is_none() && self.active_pause().is_none() && schedule::activated_at().is_some() {
+            crate::scheduled::warn_if_overdue(chrono::Local::now().naive_local(), &self.cfg);
+        }
+    }
+
     /// Pause des Zeitplans setzen (`None` = fortsetzen) und anzeigen.
     fn set_pause(&mut self, until: Option<chrono::NaiveDateTime>) {
         crate::config::write_pause(until);
@@ -293,6 +362,7 @@ impl App {
         self.external_checked = std::time::Instant::now();
         let now = crate::config::read_external_run();
         if self.external_run.is_some() && now.is_none() {
+            self.reload_schedule_files();
             self.last_run = crate::config::read_last_run();
             self.history = crate::config::read_history(8);
             self.last_check = crate::config::read_last_check();
@@ -322,14 +392,23 @@ impl App {
                 }
                 Msg::BackupDone(r) => {
                     self.busy = false;
-                    let ok = r.is_ok();
-                    crate::notify::backup_finished(matches!(r, Ok(true)), r.as_ref().err().map(String::as_str), self.cfg.notify_success);
+                    // Ein Abbruch ist kein Fehlschlag: keine Fehlermeldung, im Verlauf als „abgebrochen“
+                    let outcome = match &r {
+                        Ok(_) => crate::config::RunResult::Ok,
+                        Err(_) if self.cancel.load(Ordering::Relaxed) => crate::config::RunResult::Cancelled,
+                        Err(_) => crate::config::RunResult::Failed,
+                    };
+                    if outcome != crate::config::RunResult::Cancelled {
+                        crate::notify::backup_finished(matches!(r, Ok(true)), r.as_ref().err().map(String::as_str), self.cfg.notify_success);
+                    }
                     self.log.push(match r {
                         Ok(false) => "Backup erfolgreich.".into(),
                         Ok(true) => "Backup mit Warnungen abgeschlossen.".into(),
+                        Err(_) if outcome == crate::config::RunResult::Cancelled => "Backup abgebrochen.".into(),
                         Err(e) => format!("FEHLER: {e}"),
                     });
-                    let _ = crate::config::write_last_run(ok, &self.log);
+                    let _ = crate::config::write_last_run(outcome, &self.log);
+                    self.reload_schedule_files();
                     self.last_run = crate::config::read_last_run();
                     self.history = crate::config::read_history(8);
                     self.last_check = crate::config::read_last_check();
@@ -420,6 +499,8 @@ impl App {
                         Err(_) => {}
                     }
                 }
+                Msg::SchedStatus(s) => self.sched_status = Some(s),
+                Msg::SchedCheck(m) => self.sched_check = m,
                 Msg::Restored(r) => {
                     self.busy = false;
                     match r {
@@ -440,6 +521,10 @@ impl App {
         self.repo_msg.clear();
         if tab == Tab::Snapshots && !self.snaps_loaded && !self.busy && self.cfg.is_ready() {
             self.load_snapshots(ctx);
+        }
+        if tab == Tab::Schedule {
+            self.sched_check.clear();
+            self.load_schedule_status(ctx);
         }
     }
 
@@ -485,7 +570,7 @@ impl App {
         self.spawn(ctx, move |tx| {
             let (t1, t2) = (tx.clone(), tx.clone());
             let r = job::run_backup(&cfg, true, &cancel, move |m| drop(t1.send(Msg::Log(m))), move |e| drop(t2.send(Msg::Event(e))));
-            // „Läuft bereits“ ist kein Fehlschlag: sonst würde der Zeitplan danach 2 Stunden pausieren
+            // „Läuft bereits“ ist kein Fehlschlag: sonst zählte er im Verlauf als Fehler
             if r.as_ref().is_err_and(|e| e.downcast_ref::<job::AlreadyRunning>().is_some()) {
                 let _ = tx.send(Msg::BackupBusy(format!("{:#}", r.unwrap_err())));
                 return;
@@ -516,9 +601,14 @@ impl App {
                     ui.label(RichText::new("Letzter Lauf").color(MUTED).size(13.0));
                     match self.last_run.as_deref().and_then(|l| l.lines().next()) {
                         Some(head) => {
-                            let ok = head.contains("ERFOLGREICH");
                             ui.horizontal(|ui| {
-                                ui::badge(ui, if ok { "Erfolgreich" } else { "Fehler" }, if ok { OK } else { ERR });
+                                if head.contains("ERFOLGREICH") {
+                                    ui::badge(ui, "Erfolgreich", OK);
+                                } else if head.contains("ABGEBROCHEN") {
+                                    ui::badge(ui, "Abgebrochen", WARN);
+                                } else {
+                                    ui::badge(ui, "Fehler", ERR);
+                                }
                                 ui.label(head.split(" – ").next().unwrap_or(head));
                                 if let Some((age, overdue)) = ui::age_text(head, chrono::Local::now().naive_local()) {
                                     ui.label(RichText::new(format!("({age})")).color(if overdue { WARN } else { MUTED }));
@@ -1211,16 +1301,23 @@ impl App {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     if ui.add(ui::primary("Zeitplan aktivieren")).clicked() {
-                        self.status = match self.cfg.validate().and_then(|_| self.cfg.save()).and_then(|_| schedule::install(&self.cfg.schedule_times, &self.cfg.schedule_days, schedule::Options { only_on_ac: self.cfg.only_on_ac })) {
+                        self.status = match self.cfg.validate().and_then(|_| self.cfg.save()).and_then(|_| schedule::install(&self.cfg.schedule_times, &self.cfg.schedule_days, self.sched_opts())) {
                             Ok(()) => format!("Zeitplan aktiv: {}.", self.schedule_summary()),
                             Err(e) => format!("FEHLER: {e:#}"),
                         };
+                        // Ohne fstab-Eintrag kann ein geplanter Lauf die Freigabe nicht einbinden (kein pkexec-Dialog)
+                        #[cfg(unix)]
+                        if !self.status.starts_with("FEHLER") && !smb::scheduled_mount_ready() {
+                            self.status = "Warnung: Zeitplan aktiv, aber der fstab-Eintrag fehlt. Geplante Läufe können die Freigabe so nicht einbinden – siehe „Automatisches Einbinden (Linux)“ unten.".into();
+                        }
+                        self.load_schedule_status(ui.ctx());
                     }
                     if ui.button("Zeitplan entfernen").clicked() {
                         self.status = match schedule::remove() {
                             Ok(()) => "Zeitplan entfernt.".into(),
                             Err(e) => format!("FEHLER: {e:#}"),
                         };
+                        self.load_schedule_status(ui.ctx());
                     }
                 });
                 ui::status(ui, &self.status);
@@ -1228,13 +1325,90 @@ impl App {
                     ui,
                     "hint_catchup",
                     "Änderungen gelten erst nach „Zeitplan aktivieren“. Verpasste Läufe werden nachgeholt.",
-                    "Der Zeitplan startet das Programm zu den Uhrzeiten, bei der Anmeldung, beim Entsperren und alle 30 Minuten; gesichert wird nur, wenn seit dem letzten geplanten Termin noch kein Backup gelang. War der Laptop aus, wird also einmal nachgeholt (auch nach Tagen). Ist das NAS nicht erreichbar (z. B. unterwegs), wird der Lauf still übersprungen und später erneut versucht – ohne Fehler im Protokoll. Schlägt ein Lauf fehl, wartet der Zeitplan zwei Stunden bis zum nächsten Versuch. Nach einer Programm-Aktualisierung wird der Zeitplan beim Start der App automatisch erneuert.",
+                    "Der Zeitplan startet das Programm zu den Uhrzeiten, bei der Anmeldung, beim Entsperren und alle 10 Minuten (Windows zusätzlich beim Aufwachen und sobald ein Netzwerk verbunden ist); gesichert wird nur, wenn seit dem letzten geplanten Termin noch kein Backup gelang. War der Rechner aus, wird also einmal nachgeholt (auch nach Tagen). Ist das NAS nicht erreichbar (z. B. unterwegs), wird der Lauf übersprungen und später erneut versucht – ohne Fehler im Verlauf. Schlägt ein Lauf fehl, versucht es der Zeitplan nach 5 Minuten erneut, danach nach 15 Minuten, einer Stunde und dann alle zwei Stunden; eine Desktop-Meldung kommt erst beim zweiten Fehlschlag in Folge. Ein abgebrochenes Backup zählt nicht als Fehlschlag. Nach einer Programm-Aktualisierung wird der Zeitplan beim Start der App automatisch erneuert.",
                 );
                 #[cfg(windows)]
                 ui::hint(ui, "Der Taskplaner-Task läuft unter deinem Benutzer und nutzt die Freigabe direkt per UNC-Pfad.");
             });
+            ui::card(ui, Some("Diagnose"), |ui| {
+                let now = chrono::Local::now().naive_local();
+                egui::Grid::new("sched_diag").num_columns(2).spacing([18.0, 6.0]).show(ui, |ui| {
+                    ui.label("Zeitplan im System");
+                    match &self.sched_status {
+                        None => ui.label(RichText::new("wird abgefragt …").color(MUTED)),
+                        Some(s) if !s.installed => ui.label(RichText::new("nicht eingerichtet").color(WARN)),
+                        Some(s) if !s.active => ui.label(RichText::new("eingerichtet, aber deaktiviert").color(ERR)),
+                        Some(_) => ui.label(RichText::new("aktiv").color(OK)),
+                    };
+                    ui.end_row();
+                    if let Some(s) = self.sched_status.as_ref().filter(|s| s.installed) {
+                        if let Some(exe) = &s.exe {
+                            ui.label("Programmdatei");
+                            if s.exe_exists {
+                                ui.label(RichText::new(exe).color(MUTED));
+                            } else {
+                                ui.label(RichText::new(format!("{exe} – fehlt! „Zeitplan aktivieren“ richtet ihn neu ein.")).color(ERR));
+                            }
+                            ui.end_row();
+                        }
+                        ui.label("Letzter Start");
+                        ui.label(match (&s.last_run, &s.result) {
+                            (Some(t), Some(r)) => format!("{t} ({r})"),
+                            (Some(t), None) => t.clone(),
+                            (None, Some(r)) => r.clone(),
+                            (None, None) => "noch keiner".into(),
+                        });
+                        ui.end_row();
+                    }
+                    ui.label("Letztes Backup");
+                    ui.label(self.sched_last_success.map_or("noch keins".to_string(), |t| t.format("%d.%m.%Y %H:%M").to_string()));
+                    ui.end_row();
+                    ui.label("Nächster Termin");
+                    ui.label(match schedule::next_slot(now, &self.cfg.schedule_times, &self.cfg.schedule_days) {
+                        Ok(Some(t)) => t.format("%d.%m.%Y %H:%M").to_string(),
+                        _ => "keiner (Uhrzeit oder Wochentag fehlt)".into(),
+                    });
+                    ui.end_row();
+                    if let Some((count, failed)) = self.sched_failures {
+                        let next = failed + chrono::Duration::minutes(crate::scheduled::retry_delay_minutes(count));
+                        ui.label("Fehlversuche");
+                        ui.label(RichText::new(format!("{count} in Folge, zuletzt {} – nächster Versuch ab {}", failed.format("%d.%m. %H:%M"), next.format("%H:%M"))).color(WARN));
+                        ui.end_row();
+                    }
+                    if !self.sched_mount_ready {
+                        ui.label("Einbinden");
+                        ui.label(RichText::new("fstab-Eintrag fehlt – geplante Läufe können die Freigabe nicht einbinden").color(ERR));
+                        ui.end_row();
+                    }
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Zeitplan prüfen").on_hover_text("Zeigt, was ein Zeitplan-Lauf jetzt täte. Startet kein Backup.").clicked() {
+                        self.check_schedule(ui.ctx());
+                    }
+                    if ui.button("Aktualisieren").clicked() {
+                        self.load_schedule_status(ui.ctx());
+                    }
+                });
+                ui::status(ui, &self.sched_check);
+                ui.separator();
+                ui.label(RichText::new("Letzte Entscheidungen des Zeitplans").color(MUTED).size(13.0));
+                if self.sched_log.is_empty() {
+                    ui::hint(ui, "Noch keine Einträge.");
+                }
+                for (time, msg) in &self.sched_log {
+                    // Zeitstempel „JJJJ-MM-TT HH:MM:SS“ kürzen auf „TT.MM. HH:MM“
+                    let short = chrono::NaiveDateTime::parse_from_str(time, "%Y-%m-%d %H:%M:%S").map_or(time.clone(), |t| t.format("%d.%m. %H:%M").to_string());
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(short).monospace().color(MUTED).size(13.0));
+                        ui.label(RichText::new(msg).size(13.0));
+                    });
+                }
+            });
             ui::card(ui, Some("Laptop und Pause"), |ui| {
                 ui.checkbox(&mut self.cfg.only_on_ac, "Nur am Netzteil sichern");
+                #[cfg(windows)]
+                ui.checkbox(&mut self.cfg.wake_to_run, "Rechner zu den Uhrzeiten aus dem Standby wecken").on_hover_text("Windows weckt den Rechner nur, wenn in den Energieoptionen „Zeitgeber zur Aktivierung zulassen“ eingeschaltet ist.");
                 ui.horizontal(|ui| {
                     ui.label("Warnen nach");
                     ui.add(egui::DragValue::new(&mut self.cfg.warn_after_days).range(0..=60).suffix(" Tagen"));
@@ -1360,6 +1534,7 @@ impl eframe::App for App {
             self.pending_overview = false;
             self.load_overview(ctx);
         }
+        self.check_overdue();
         self.handle_tray(ctx);
     }
 
