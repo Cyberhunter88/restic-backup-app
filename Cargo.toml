@@ -12,7 +12,9 @@ clap = { version = "4.6.7", features = ["derive"] }
 directories = "6.0.0"
 # OpenGL (glow) statt wgpu: schnellerer Start, weniger Speicher, kleinere Datei; die Oberfläche braucht kein Vulkan
 eframe = { version = "0.37.0", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "links", "system_fonts", "wayland", "web_screen_reader", "glow", "x11"] }
-keyring = "4.2.0"
+# Schlüsselbund direkt über keyring-core und den Speicher der Plattform (statt des Sammelpakets `keyring`): Dessen
+# einmalige Initialisierung merkt sich einen Fehlschlag für den ganzen Prozess; so lässt sie sich wiederholen
+keyring-core = "1.0.1"
 notify-rust = "4.18.2"
 rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -26,6 +28,12 @@ winresource = "0.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+zbus-secret-service-keyring-store = { version = "1.0.1", features = ["crypto-rust"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-native-keyring-store = "1.1.0"
 
 [dev-dependencies]
 tempfile = "3.27.0"

@@ -282,12 +282,9 @@ impl App {
 
     /// Sieht nach, ob ein Zeitplan-Lauf (anderer Prozess) gerade sichert. Endet er, werden Verlauf und Übersicht neu geladen.
     fn poll_external_run(&mut self) {
-        if self.busy {
-            // Die eigene Sperre würde als „fremd“ gelten
-            self.external_run = None;
-            return;
-        }
-        if self.external_checked.elapsed() < std::time::Duration::from_secs(2) {
+        // Während einer eigenen Aufgabe nicht nachsehen: Hält die App die Sperre selbst (Backup, „Sperren entfernen“),
+        // sähe das wie ein fremder Lauf aus. Der letzte Stand bleibt stehen und wird danach aktualisiert.
+        if self.busy || self.external_checked.elapsed() < std::time::Duration::from_secs(2) {
             return;
         }
         self.external_checked = std::time::Instant::now();
@@ -337,7 +334,14 @@ impl App {
                 }
                 Msg::BackupBusy(m) => {
                     self.busy = false;
-                    self.log.push(format!("FEHLER: {m}"));
+                    // Meist ein Zeitplan-Lauf, der gerade erst begonnen hat: gleich nachsehen und ihn anzeigen
+                    self.external_run = crate::config::read_external_run();
+                    self.external_checked = std::time::Instant::now();
+                    if self.external_run.is_some() {
+                        self.log.clear();
+                    } else {
+                        self.log.push(format!("FEHLER: {m}"));
+                    }
                 }
                 Msg::Snaps(r) => {
                     self.busy = false;
