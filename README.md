@@ -45,7 +45,7 @@ Das Skript holt die Build-Abhängigkeiten, baut ein pacman-Paket (`restic`, `cif
 1. **Einstellungen:** NAS-Host, Freigabe, Unterordner des Repos, SMB-Benutzer/-Passwort, Repo-Passwort und Quellordner eintragen, speichern.
 2. **Bestehendes Repo nutzen:** Unterordner auf das vorhandene Repo setzen, Repo-Passwort eintragen und **Repo prüfen** klicken. Ein neues Repo wird nur angelegt, wenn „Neues Repo anlegen“ aktiviert ist.
 3. **Ausschlüsse:** Muster wie `*.tmp` oder `node_modules`; „Übliche Ausschlüsse“ fügt eine Vorlage hinzu.
-4. **Zeitplan:** Uhrzeiten (z. B. „Alle 6 Stunden“) und Wochentage wählen, dann „Zeitplan aktivieren“. Unter Linux die angezeigte `/etc/fstab`-Zeile eintragen, damit geplante Läufe ohne pkexec-Dialog mounten können.
+4. **Zeitplan:** Uhrzeiten (z. B. „Alle 6 Stunden“) und Wochentage wählen, dann „Zeitplan aktivieren“. Unter Linux fragt die App dabei einmalig nach dem Benutzer-Passwort und trägt die Freigabe in `/etc/fstab` ein; danach wird ohne Rückfrage eingebunden, auch bei geplanten Läufen.
 
 Das Ergebnis des letzten Laufs steht im Backup-Tab (`last-run.log` im Datenverzeichnis der App).
 

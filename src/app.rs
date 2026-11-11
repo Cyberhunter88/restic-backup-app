@@ -252,9 +252,9 @@ impl App {
                 TrayCmd::Quit => self.quit(ctx),
             }
         }
-        if !self.quitting && self.cfg.close_to_tray && ctx.input(|i| i.viewport().close_requested()) {
+        if !self.quitting && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            ctx.send_viewport_cmd(ui::hide_command());
         }
     }
 
@@ -281,7 +281,7 @@ impl App {
         self.sched_failures = crate::config::read_schedule_failures();
         #[cfg(unix)]
         {
-            self.sched_mount_ready = smb::scheduled_mount_ready();
+            self.sched_mount_ready = smb::scheduled_mount_ready(&self.cfg);
         }
     }
 
@@ -623,6 +623,11 @@ impl App {
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                     ui.label(RichText::new(format!("v{}", env!("CARGO_PKG_VERSION"))).color(MUTED).size(12.5));
+                    // Das X schickt die App nur in den Hintergrund; ohne Tray-Icon ist das der einzige Weg, sie zu beenden
+                    if ui.add(egui::Button::new("Beenden").min_size(egui::vec2(ui.available_width(), 30.0))).on_hover_text("Programm ganz beenden. Das X des Fensters lässt es im Hintergrund weiterlaufen.").clicked() {
+                        self.quit(&ctx);
+                    }
+                    ui.add_space(4.0);
                     if self.busy {
                         // Punkte statt `ui.spinner()`: der Spinner zeichnet bei jedem Frame neu (Dauer-Last für GPU/CPU)
                         let dots = (ui.input(|i| i.time) * 3.0) as usize % 4;

@@ -70,18 +70,19 @@ impl App {
                             Err(e) => self.status = format!("FEHLER: {e:#}"),
                             Ok(()) => {
                                 let (times, days, opts, summary) = (self.cfg.schedule_times.clone(), self.cfg.schedule_days, self.sched_opts(), self.schedule_summary());
+                                #[cfg(unix)]
+                                let cfg = self.cfg.clone();
                                 self.status = "Richte Zeitplan ein …".into();
                                 self.spawn(ui.ctx(), move |tx| {
                                     let msg = match schedule::install(&times, &days, opts) {
                                         Ok(()) => format!("Zeitplan aktiv: {summary}."),
                                         Err(e) => format!("FEHLER: {e:#}"),
                                     };
-                                    // Ohne fstab-Eintrag kann ein geplanter Lauf die Freigabe nicht einbinden (kein pkexec-Dialog)
+                                    // Geplante Läufe können keinen Passwort-Dialog bestätigen: das Einbinden gleich mit einrichten
                                     #[cfg(unix)]
-                                    let msg = if !msg.starts_with("FEHLER") && !smb::scheduled_mount_ready() {
-                                        "Warnung: Zeitplan aktiv, aber der fstab-Eintrag fehlt. Geplante Läufe können die Freigabe so nicht einbinden – siehe „Automatisches Einbinden (Linux)“ unten.".to_string()
-                                    } else {
-                                        msg
+                                    let msg = match smb::setup_fstab(&cfg) {
+                                        Err(e) if !msg.starts_with("FEHLER") => format!("Warnung: Zeitplan aktiv, aber das Einbinden ohne Rückfrage ist nicht eingerichtet ({e:#}). Geplante Läufe können die Freigabe so nicht einbinden – siehe „Automatisches Einbinden (Linux)“ unten."),
+                                        _ => msg,
                                     };
                                     let _ = tx.send(Msg::SchedDone(msg));
                                 });
@@ -156,7 +157,7 @@ impl App {
                     }
                     if !self.sched_mount_ready {
                         ui.label("Einbinden");
-                        ui.label(RichText::new("fstab-Eintrag fehlt – geplante Läufe können die Freigabe nicht einbinden").color(ERR));
+                        ui.label(RichText::new("nicht eingerichtet – geplante Läufe können die Freigabe nicht einbinden (siehe „Automatisches Einbinden“ unten)").color(ERR));
                         ui.end_row();
                     }
                 });
@@ -233,15 +234,24 @@ impl App {
             });
             #[cfg(unix)]
             ui::card(ui, Some("Automatisches Einbinden (Linux)"), |ui| {
-                ui::hint_long(ui, "hint_fstab", "Geplante Läufe brauchen einen fstab-Eintrag (als root).", "Geplante Läufe können keinen pkexec-Dialog bestätigen. Trage diese Zeile in /etc/fstab ein (als root); danach mountet die App ohne Rückfrage:");
-                let mut line = smb::fstab_line(&self.cfg).unwrap_or_default();
-                ui.add(egui::TextEdit::multiline(&mut line).code_editor().desired_rows(3).desired_width(f32::INFINITY));
-                if ui.button("Credentials-Datei anlegen (SMB-Passwort aus Keyring)").clicked() {
-                    self.status = match secrets::get(Secret::Smb).and_then(|p| p.ok_or_else(|| anyhow::anyhow!("Kein SMB-Passwort gespeichert"))).and_then(|p| smb::write_credentials(&self.cfg, &p)) {
-                        Ok(()) => "Credentials-Datei (0600) angelegt.".into(),
-                        Err(e) => format!("FEHLER: {e:#}"),
-                    };
+                if self.sched_mount_ready {
+                    ui.label(RichText::new("Eingerichtet: Die Freigabe wird ohne Passwort-Abfrage eingebunden, auch im Zeitplan.").color(OK));
+                } else {
+                    ui.label(RichText::new("Noch nicht eingerichtet: Jedes Einbinden fragt nach deinem Benutzer-Passwort, geplante Läufe scheitern.").color(WARN));
+                    if ui.add_enabled(!self.busy, ui::primary("Jetzt einrichten")).on_hover_text("Fragt einmalig nach deinem Benutzer-Passwort und trägt die Freigabe in /etc/fstab ein.").clicked() {
+                        let cfg = self.cfg.clone();
+                        self.status = "Richte das Einbinden ein …".into();
+                        self.spawn(ui.ctx(), move |tx| {
+                            let _ = tx.send(Msg::SchedDone(match smb::setup_fstab(&cfg) {
+                                Ok(()) => "Einbinden eingerichtet: ab jetzt ohne Passwort-Abfrage.".into(),
+                                Err(e) => format!("FEHLER: {e:#}"),
+                            }));
+                        });
+                    }
                 }
+                ui::hint_long(ui, "hint_fstab", "Die Einrichtung geschieht einmalig und automatisch beim ersten Einbinden aus dem Fenster.", "Die App trägt dafür eine Zeile mit „user,noauto“ in /etc/fstab ein (die alte Datei bleibt als /etc/fstab.restic-backup-app.bak erhalten). Ändern sich NAS, Freigabe oder Benutzer, wird die Zeile beim nächsten Einbinden ersetzt. Von Hand ginge es mit dieser Zeile:");
+                let mut line = smb::fstab_line(&self.cfg).unwrap_or_default();
+                ui.add(egui::TextEdit::multiline(&mut line).code_editor().desired_rows(2).desired_width(f32::INFINITY));
             });
             });
         });

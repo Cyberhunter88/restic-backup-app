@@ -17,10 +17,11 @@ impl App {
             });
             ui::status(ui, &self.update_msg);
             ui.checkbox(&mut self.cfg.notify_success, "Auch nach erfolgreichem Backup eine Desktop-Meldung senden");
-            ui.checkbox(&mut self.cfg.close_to_tray, "Fenster schließen (X) = im Hintergrund weiterlaufen (aus: App beenden)");
-            if !self.has_tray() {
-                ui::hint(ui, "Kein Tray-Icon verfügbar: Das Fenster kommt zurück, wenn die App erneut gestartet wird.");
-            }
+            ui::hint(ui, if self.has_tray() {
+                "Das X des Fensters lässt die App im Hintergrund weiterlaufen (Tray-Icon). Ganz beenden: „Beenden“ in der Seitenleiste oder im Tray-Menü."
+            } else {
+                "Das X des Fensters lässt die App im Hintergrund weiterlaufen. Kein Tray-Icon verfügbar: Das Fenster kommt zurück, wenn die App erneut gestartet wird. Ganz beenden: „Beenden“ in der Seitenleiste."
+            });
             ui.checkbox(&mut self.cfg.check_updates, "Beim Start täglich nach einer neuen Version suchen");
             ui::hint_long(ui, "hint_update", "Die Suche fragt nur die öffentliche GitHub-Release-Seite ab und sendet keine Daten.", "Update: neues Setup (Windows) bzw. .deb/AppImage (Linux) installieren – Einstellungen und Passwörter bleiben erhalten. Danach den Zeitplan einmal neu aktivieren. Die Option wird mit „Speichern“ (Einstellungen) übernommen.");
         });
