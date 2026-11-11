@@ -15,8 +15,9 @@ on:
   # Manuell startbar (z. B. für einen main-Commit ohne Build, den der Release-Workflow braucht)
   workflow_dispatch:
 
+# Der Build veröffentlicht nichts (das macht `release.yml`): Lesen reicht
 permissions:
-  contents: write
+  contents: read
 
 # Neuere Läufe derselben Änderung ersetzen ältere
 concurrency:

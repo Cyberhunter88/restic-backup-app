@@ -1,9 +1,10 @@
+use crate::restore::{RestoreOptions, parse_restore_progress, restore_args};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 pub struct Restic {
     pub bin: String,
@@ -254,6 +255,18 @@ pub struct BackupOptions<'a> {
     pub pack_size_mib: u32,
     /// Parallele Schreibvorgänge im Repo (0 = restic-Standard 2); auf SMB mit Latenz deutlich schneller
     pub connections: u32,
+    /// Parallele Dateilesevorgänge (0 = restic-Standard 2); beschleunigt das Einlesen vieler kleiner Dateien
+    pub read_concurrency: u32,
+}
+
+/// Was die installierte restic-Version an Beschleunigung kann (siehe `tuning_for`).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Tuning {
+    pub pack_size_mib: u32,
+    pub connections: u32,
+    pub read_concurrency: u32,
+    /// `--no-scan` wird unterstützt
+    pub no_scan: bool,
 }
 
 /// Version aus der Ausgabe von `restic version` („restic 0.18.1 compiled with …“).
@@ -264,18 +277,23 @@ pub fn parse_version(out: &str) -> Option<(u32, u32)> {
 }
 
 /// Einstellungen zur Beschleunigung, die es erst in neueren restic-Versionen gibt (`--pack-size` ab 0.14,
-/// `-o local.connections` ab 0.17); ältere Versionen würden sonst mit „unknown flag/option“ scheitern.
-pub fn tuning_for(version: Option<(u32, u32)>) -> (u32, u32) {
-    match version {
-        Some(v) if v >= (0, 17) => (64, 8),
-        Some(v) if v >= (0, 14) => (64, 0),
-        _ => (0, 0),
+/// `--read-concurrency` und `--no-scan` ab 0.15, `-o local.connections` ab 0.17); ältere Versionen (z. B. 0.14
+/// aus Debian 12) würden sonst mit „unknown flag/option“ scheitern. Unbekannte Version: nichts davon.
+pub fn tuning_for(version: Option<(u32, u32)>) -> Tuning {
+    let v = version.unwrap_or((0, 0));
+    Tuning {
+        pack_size_mib: if v >= (0, 14) { 64 } else { 0 },
+        connections: if v >= (0, 17) { 8 } else { 0 },
+        read_concurrency: if v >= (0, 15) { 4 } else { 0 },
+        no_scan: v >= (0, 15),
     }
 }
 
 pub fn backup_args(o: &BackupOptions) -> Vec<String> {
-    // Mehr parallele Dateilesevorgänge beschleunigen das Einlesen vieler kleiner Dateien (restic ≥ 0.13)
-    let mut a = vec!["backup".to_string(), "--json".into(), "--read-concurrency".into(), "4".into()];
+    let mut a = vec!["backup".to_string(), "--json".into()];
+    if o.read_concurrency > 0 {
+        a.extend(["--read-concurrency".into(), o.read_concurrency.to_string()]);
+    }
     if !o.host.is_empty() {
         a.extend(["--host".into(), o.host.into()]);
     }
@@ -324,6 +342,14 @@ pub fn forget_args(daily: u32, weekly: u32, monthly: u32, host: &str, prune: boo
         }
     }
     a
+}
+
+/// Ergebnis eines gestreamten restic-Aufrufs (`Restic::run_streaming`).
+struct Streamed {
+    status: std::process::ExitStatus,
+    /// Leer, wenn abgebrochen wurde
+    stderr: String,
+    cancelled: bool,
 }
 
 /// `remove_all`: auch Sperren entfernen, die noch aktiv aussehen (nur, wenn sicher kein anderer Lauf aktiv ist).
@@ -413,18 +439,31 @@ impl Restic {
     }
 
     /// Sucht Dateien und Ordner nach Namen in einem Snapshot (`restic find`, ohne Beachtung der Groß-/Kleinschreibung).
-    pub fn find(&self, snapshot: &str, term: &str, limit: usize) -> Result<Vec<Node>> {
-        let out = self.run(&["find".into(), "--json".into(), "--ignore-case".into(), "--snapshot".into(), snapshot.into(), find_pattern(term)])?;
+    pub fn find(&self, snapshot: &str, term: &str, limit: usize, cancel: &AtomicBool) -> Result<Vec<Node>> {
+        let out = self.run_cancellable(&["find".into(), "--json".into(), "--ignore-case".into(), "--snapshot".into(), snapshot.into(), find_pattern(term)], cancel)?;
         Ok(parse_find(&out, limit))
     }
 
-    pub fn restore(&self, snapshot: &str, target: &str, include: Option<&str>) -> Result<()> {
-        let mut a = Self::s(&["restore", snapshot, "--target", target]);
-        if let Some(i) = include {
-            a.push("--include".into());
-            a.push(i.into());
+    /// Stellt wieder her; `on_progress` bekommt den Fortschritt (0.0 bis 1.0), sofern restic ihn meldet (ab 0.17).
+    pub fn restore(&self, o: &RestoreOptions, cancel: &AtomicBool, mut on_progress: impl FnMut(f64)) -> Result<()> {
+        let version = self.version();
+        if o.in_place && version.is_none_or(|v| v < (0, 17)) {
+            bail!("Wiederherstellen am Originalort braucht restic 0.17 oder neuer");
         }
-        self.run(&a).map(|_| ())
+        let s = self.run_streaming(&restore_args(o, version), cancel, |line| {
+            if let Some(p) = parse_restore_progress(line) {
+                on_progress(p);
+            }
+        })?;
+        if s.cancelled {
+            bail!("Wiederherstellung abgebrochen");
+        }
+        if !s.status.success() {
+            // Mit `--json` kommen Fehler als JSON-Zeilen, sonst als Text
+            let errors = parse_backup_errors(&s.stderr);
+            bail!("restic restore fehlgeschlagen: {}", if errors.is_empty() { s.stderr.trim().to_string() } else { errors.join("; ") });
+        }
+        Ok(())
     }
 
     pub fn forget(&self, daily: u32, weekly: u32, monthly: u32, host: &str, prune: bool) -> Result<()> {
@@ -453,15 +492,15 @@ impl Restic {
         self.run(&unlock_args(remove_all)).map(|_| ())
     }
 
-    pub fn check(&self) -> Result<()> {
-        self.run(&Self::s(&["check"])).map(|_| ())
+    pub fn check(&self, cancel: &AtomicBool) -> Result<()> {
+        self.run_cancellable(&Self::s(&["check"]), cancel).map(|_| ())
     }
 
-    /// Führt ein Backup aus. Exit-Code 3 (einige Dateien nicht lesbar) gilt als Warnung, nicht als Fehler.
-    pub fn backup(&self, opts: &BackupOptions, cancel: &AtomicBool, mut on_event: impl FnMut(BackupEvent)) -> Result<BackupOutcome> {
-        let args = backup_args(opts);
+    /// Startet restic, reicht jede Zeile der Standardausgabe (samt Zeilenende) an `on_line` und beendet den Prozess,
+    /// sobald `cancel` gesetzt wird. Gemeinsame Grundlage für Backup, Wiederherstellung und abbrechbare Aufrufe.
+    fn run_streaming(&self, args: &[String], cancel: &AtomicBool, mut on_line: impl FnMut(&str)) -> Result<Streamed> {
         let mut child = self
-            .cmd(&args)
+            .cmd(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -474,10 +513,9 @@ impl Restic {
             let _ = std::io::Read::read_to_string(&mut BufReader::new(stderr), &mut s);
             s
         });
-        let child = Arc::new(Mutex::new(child));
-        let done = Arc::new(AtomicBool::new(false));
-        let mut got_summary = false;
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let child = Mutex::new(child);
+        let done = AtomicBool::new(false);
+        let cancelled = AtomicBool::new(false);
         std::thread::scope(|sc| {
             // Wächter: beendet den restic-Prozess, sobald abgebrochen wird
             sc.spawn(|| {
@@ -500,18 +538,43 @@ impl Restic {
                     Ok(0) | Err(_) => break,
                     Ok(_) => {}
                 }
-                if let Some(ev) = parse_backup_line(&String::from_utf8_lossy(&buf)) {
-                    got_summary |= matches!(ev, BackupEvent::Summary { .. });
-                    on_event(ev);
-                }
+                on_line(&String::from_utf8_lossy(&buf));
             }
             done.store(true, Ordering::Relaxed);
         });
         let status = child.lock().unwrap().wait()?;
         if cancelled.load(Ordering::Relaxed) {
+            return Ok(Streamed { status, stderr: String::new(), cancelled: true });
+        }
+        Ok(Streamed { status, stderr: err_thread.join().unwrap_or_default(), cancelled: false })
+    }
+
+    /// Wie `run`, aber abbrechbar (für Aufrufe, die über SMB lange dauern können).
+    fn run_cancellable(&self, args: &[String], cancel: &AtomicBool) -> Result<String> {
+        let mut out = String::new();
+        let s = self.run_streaming(args, cancel, |line| out.push_str(line))?;
+        if s.cancelled {
+            bail!("Abgebrochen");
+        }
+        if !s.status.success() {
+            bail!("restic {} fehlgeschlagen: {}", args.first().map(String::as_str).unwrap_or(""), s.stderr.trim());
+        }
+        Ok(out)
+    }
+
+    /// Führt ein Backup aus. Exit-Code 3 (einige Dateien nicht lesbar) gilt als Warnung, nicht als Fehler.
+    pub fn backup(&self, opts: &BackupOptions, cancel: &AtomicBool, mut on_event: impl FnMut(BackupEvent)) -> Result<BackupOutcome> {
+        let mut got_summary = false;
+        let s = self.run_streaming(&backup_args(opts), cancel, |line| {
+            if let Some(ev) = parse_backup_line(line) {
+                got_summary |= matches!(ev, BackupEvent::Summary { .. });
+                on_event(ev);
+            }
+        })?;
+        if s.cancelled {
             bail!("Backup abgebrochen");
         }
-        let err = err_thread.join().unwrap_or_default();
+        let (status, err) = (s.status, s.stderr);
         for m in parse_backup_errors(&err) {
             on_event(BackupEvent::FileError(m));
         }
@@ -634,7 +697,10 @@ kein json
             no_scan: true,
             pack_size_mib: 64,
             connections: 8,
+            read_concurrency: 4,
         });
+        // Ohne Angabe (ältere restic-Version) fehlt der Schalter ganz
+        assert!(!backup_args(&BackupOptions { sources: &src, ..Default::default() }).contains(&"--read-concurrency".to_string()));
         assert_eq!(
             a,
             [
@@ -649,11 +715,14 @@ kein json
         assert_eq!(parse_version("restic 0.19.1 compiled with go1.26.4 on windows/amd64
 "), Some((0, 19)));
         assert_eq!(parse_version("kaputt"), None);
-        assert_eq!(tuning_for(Some((0, 19))), (64, 8));
-        assert_eq!(tuning_for(Some((0, 16))), (64, 0));
-        assert_eq!(tuning_for(Some((0, 13))), (0, 0));
-        assert_eq!(tuning_for(None), (0, 0));
-        assert_eq!(tuning_for(Some((1, 0))), (64, 8));
+        let full = Tuning { pack_size_mib: 64, connections: 8, read_concurrency: 4, no_scan: true };
+        assert_eq!(tuning_for(Some((0, 19))), full);
+        assert_eq!(tuning_for(Some((0, 16))), Tuning { connections: 0, ..full });
+        // Debian 12 liefert 0.14: weder `--read-concurrency` noch `--no-scan`
+        assert_eq!(tuning_for(Some((0, 14))), Tuning { pack_size_mib: 64, ..Default::default() });
+        assert_eq!(tuning_for(Some((0, 13))), Tuning::default());
+        assert_eq!(tuning_for(None), Tuning::default());
+        assert_eq!(tuning_for(Some((1, 0))), full);
     }
 
     #[test]
@@ -710,7 +779,7 @@ kein json
         r.init().unwrap();
         let (srcs, ex, nb) = (vec![src.to_string_lossy().into_owned()], vec!["*.tmp".to_string(), "node_modules".to_string()], vec![".nobackup".to_string()]);
         r.backup(
-            &BackupOptions { sources: &srcs, excludes: &ex, exclude_caches: true, one_file_system: false, exclude_if_present: &nb, exclude_larger_than: "1M", host: "testhost", no_scan: true, pack_size_mib: 64, connections: 8 },
+            &BackupOptions { sources: &srcs, excludes: &ex, exclude_caches: true, one_file_system: false, exclude_if_present: &nb, exclude_larger_than: "1M", host: "testhost", no_scan: true, pack_size_mib: 64, connections: 8, read_concurrency: 4 },
             &AtomicBool::new(false),
             |_| {},
         )
@@ -760,7 +829,7 @@ kein json
         let snaps = r.snapshots().unwrap();
         assert_eq!(snaps.len(), 1);
         let out = d.path().join("out");
-        r.restore(&snaps[0].id, &out.to_string_lossy(), None).unwrap();
+        r.restore(&RestoreOptions { snapshot: &snaps[0].id, target: &out.to_string_lossy(), verify: true, ..Default::default() }, &AtomicBool::new(false), |_| {}).unwrap();
         // restic stellt den vollen Originalpfad unter dem Ziel wieder her (Windows: Laufwerksbuchstabe als Ordner)
         let mut restored = out.clone();
         for c in src.components() {
@@ -773,6 +842,6 @@ kein json
         let restored = restored.join("a.txt");
         assert_eq!(std::fs::read_to_string(restored).unwrap(), "hallo");
         r.forget(1, 0, 0, "", true).unwrap();
-        r.check().unwrap();
+        r.check(&AtomicBool::new(false)).unwrap();
     }
 }

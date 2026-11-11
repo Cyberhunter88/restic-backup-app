@@ -7,7 +7,8 @@ Desktop-App für [restic](https://restic.net)-Backups auf ein NAS (SMB-Freigabe)
 - Bestehende restic-Repos weiterverwenden oder neue anlegen
 - Ausschlüsse: Muster, `CACHEDIR.TAG`, Markerdateien (`.nobackup`), Größenlimit
 - Zeitplan mit mehreren Uhrzeiten pro Tag und Wochentagen (Windows: Aufgabenplanung, Linux: systemd-User-Timer), Verlauf der letzten Läufe
-- Snapshots durchsuchen, Dateien oder ganze Snapshots wiederherstellen
+- Snapshots durchsuchen, Dateien oder ganze Snapshots wiederherstellen: in einen Zielordner oder am Originalort, mit Fortschritt, Abbrechen und Wahl, was mit vorhandenen Dateien geschieht (Originalort und diese Wahl brauchen restic ab 0.17)
+- Warnung, wenn der freie Platz auf dem NAS unter eine einstellbare Schwelle fällt
 - Aufbewahrungsregeln (täglich/wöchentlich/monatlich) mit automatischem `forget --prune`
 - Autostart beim Anmelden (optional); verpasste Zeitplan-Läufe werden nachgeholt, auch nach mehreren Tagen Pause
 - Laptop-tauglicher Zeitplan: sichert nur, wenn ein Backup fällig ist (kein Doppel-Backup nach dem Aufwachen), überspringt still, wenn das NAS unterwegs nicht erreichbar ist, optional nur am Netzteil; Pause-Funktion und Meldung „überfällig“ nach einstellbar vielen Tagen

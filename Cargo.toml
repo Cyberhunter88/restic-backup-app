@@ -1,6 +1,6 @@
 [package]
 name = "restic-backup-app"
-version = "0.3.28"
+version = "0.4.0"
 edition = "2024"
 description = "restic-Backup auf NAS (SMB) mit Zeitplan, Restore und Retention"
 license = "MIT"
@@ -34,6 +34,12 @@ zbus-secret-service-keyring-store = { version = "1.0.1", features = ["crypto-rus
 
 [target.'cfg(windows)'.dependencies]
 windows-native-keyring-store = "1.1.0"
+
+# Kleinere Programmdatei und schnellerer Start. Kein `panic = "abort"`: Der Tray-Thread verlässt sich darauf,
+# dass ein Panic (fehlende Bibliothek) nur ihn beendet.
+[profile.release]
+lto = "thin"
+strip = true
 
 [dev-dependencies]
 tempfile = "3.27.0"
