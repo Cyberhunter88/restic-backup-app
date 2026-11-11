@@ -70,8 +70,32 @@ fn mount_escape(s: &str) -> String {
     s.replace('\\', "\\134").replace(' ', "\\040").replace('\t', "\\011").replace('\n', "\\012")
 }
 
+/// Neuer Inhalt für `/etc/fstab`: Zeilen für denselben Mountpunkt entfallen, `line` kommt ans Ende.
+/// `None`, wenn die Zeile schon genau so eingetragen ist und kein anderer Eintrag denselben Mountpunkt nutzt.
 #[cfg(unix)]
-pub use linux::{fstab_line, mount, scheduled_mount_ready, unmount, write_credentials};
+fn fstab_with_entry(current: &str, mount_point: &str, line: &str) -> Option<String> {
+    let fields = |l: &str| l.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
+    let ours = |l: &str| !l.trim_start().starts_with('#') && l.split_whitespace().nth(1) == Some(mount_point);
+    let want = fields(line);
+    if current.lines().filter(|l| ours(l)).map(fields).eq([want]) {
+        return None;
+    }
+    let mut out: String = current.lines().filter(|l| !ours(l)).map(|l| format!("{l}\n")).collect();
+    out.push_str(line);
+    out.push('\n');
+    Some(out)
+}
+
+/// Darf die App nach dem Benutzer-Passwort fragen (pkexec-Dialog)? Nur das Fenster setzt das, Headless-Läufe nicht.
+static INTERACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Das Fenster läuft: Die einmalige Einrichtung des Einbindens darf einen Dialog zeigen.
+pub fn allow_prompts() {
+    INTERACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(unix)]
+pub use linux::{fstab_line, mount, scheduled_mount_ready, setup_fstab, unmount};
 #[cfg(windows)]
 pub use windows::{mount, unmount};
 
@@ -131,9 +155,64 @@ mod linux {
             .unwrap_or(false)
     }
 
-    /// Können geplante Läufe die Freigabe ohne Rückfrage einbinden (fstab-Eintrag vorhanden)?
-    pub fn scheduled_mount_ready() -> bool {
-        mount_point().is_ok_and(|mp| in_fstab(&mp))
+    /// Steht genau die Zeile für die aktuellen Einstellungen in `/etc/fstab` (und keine andere für den Mountpunkt)?
+    fn fstab_current(cfg: &Config) -> bool {
+        let (Ok(mp), Ok(line), Ok(cur)) = (mount_point(), fstab_line(cfg), std::fs::read_to_string(FSTAB)) else { return false };
+        fstab_with_entry(&cur, &mount_escape(&mp.to_string_lossy()), &line).is_none()
+    }
+
+    /// Können geplante Läufe die Freigabe ohne Rückfrage einbinden (passender fstab-Eintrag vorhanden)?
+    pub fn scheduled_mount_ready(cfg: &Config) -> bool {
+        fstab_current(cfg)
+    }
+
+    const FSTAB: &str = "/etc/fstab";
+
+    /// Die Rückfrage nach dem Passwort wurde abgelehnt oder geschlossen (pkexec-Code 126/127).
+    #[derive(Debug)]
+    struct PromptDismissed;
+
+    impl std::fmt::Display for PromptDismissed {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "Die Einrichtung wurde abgebrochen (Passwort-Abfrage geschlossen oder abgelehnt).")
+        }
+    }
+
+    impl std::error::Error for PromptDismissed {}
+
+    /// Einmalige Einrichtung: trägt die Freigabe mit `user,noauto` in `/etc/fstab` ein (eine Rückfrage per pkexec).
+    /// Danach bindet die App ohne Root-Rechte und ohne Dialog ein, auch im Zeitplan. Ändern sich NAS, Freigabe
+    /// oder Benutzer, ersetzt ein erneuter Aufruf die Zeile. Die alte Datei bleibt als
+    /// `/etc/fstab.restic-backup-app.bak` erhalten.
+    pub fn setup_fstab(cfg: &Config) -> Result<()> {
+        if cfg.host.trim().is_empty() || cfg.share.trim().is_empty() {
+            bail!("NAS-Adresse und Freigabe fehlen noch (Einstellungen).");
+        }
+        let mp = mount_point()?;
+        let line = fstab_line(cfg)?;
+        if std::fs::symlink_metadata(FSTAB).context("/etc/fstab ist nicht lesbar")?.file_type().is_symlink() {
+            bail!("/etc/fstab ist eine Verknüpfung und wird nicht automatisch geändert");
+        }
+        let current = std::fs::read_to_string(FSTAB).context("/etc/fstab ist nicht lesbar")?;
+        let Some(new) = fstab_with_entry(&current, &mount_escape(&mp.to_string_lossy()), &line) else { return Ok(()) };
+        // Root übernimmt den neuen Inhalt nur, wenn die Datei seit dem Lesen unverändert ist
+        let dir = crate::config::data_dir()?;
+        let (new_file, old_file) = (dir.join("fstab.neu"), dir.join("fstab.alt"));
+        std::fs::write(&new_file, new)?;
+        std::fs::write(&old_file, current)?;
+        let script = "set -e; cmp -s \"$2\" /etc/fstab; install -m 644 -o root -g root \"$1\" /etc/fstab.restic-backup-app.neu; \
+                      cp -p /etc/fstab /etc/fstab.restic-backup-app.bak; mv /etc/fstab.restic-backup-app.neu /etc/fstab; systemctl daemon-reload || true";
+        let out = Command::new("pkexec").args(["sh", "-c", script, "sh"]).arg(&new_file).arg(&old_file).output();
+        let _ = std::fs::remove_file(&new_file);
+        let _ = std::fs::remove_file(&old_file);
+        let out = out.context("pkexec konnte nicht gestartet werden")?;
+        if matches!(out.status.code(), Some(126 | 127)) {
+            return Err(PromptDismissed.into());
+        }
+        if !out.status.success() || !fstab_current(cfg) {
+            bail!("/etc/fstab ließ sich nicht ändern: {}", String::from_utf8_lossy(&out.stderr).trim());
+        }
+        Ok(())
     }
 
     /// Antwortet die eingebundene Freigabe noch? Ist der Server weg (Standby, anderes Netz), bleibt der Eintrag in
@@ -162,8 +241,17 @@ mod linux {
                 bail!("Die Freigabe ist eingebunden, antwortet aber nicht, und ließ sich nicht trennen: {}", String::from_utf8_lossy(&out.stderr).trim());
             }
         }
+        // Aus dem Fenster heraus einmalig einrichten: eine Rückfrage, danach nie wieder. Lehnt der Benutzer ab, käme
+        // sonst gleich der nächste Dialog; scheitert es aus anderem Grund, bleibt der bisherige Weg über pkexec.
+        if INTERACTIVE.load(std::sync::atomic::Ordering::Relaxed) && !fstab_current(cfg) {
+            if let Err(e) = setup_fstab(cfg) {
+                if e.downcast_ref::<PromptDismissed>().is_some() {
+                    return Err(e);
+                }
+            }
+        }
         // fstab-Eintrag mit `user`: Mount ohne Root und ohne Dialog (auch für Zeitplan)
-        if in_fstab(&mp) {
+        if fstab_current(cfg) {
             write_credentials(cfg, password)?;
             let out = Command::new("mount").arg(&mp).output().context("mount konnte nicht gestartet werden")?;
             if !out.status.success() {
@@ -374,6 +462,23 @@ mod tests {
     fn mount_escape_wie_fstab() {
         assert_eq!(mount_escape("/home/a b/c\\d"), "/home/a\\040b/c\\134d");
         assert_eq!(mount_escape("/ohne"), "/ohne");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fstab_eintrag_wird_ergaenzt_oder_ersetzt() {
+        let line = "//nas/share /home/a\\040b/mnt cifs user,noauto 0 0";
+        let mp = "/home/a\\040b/mnt";
+        let base = "# Kommentar /home/a\\040b/mnt\nUUID=1 / btrfs defaults 0 0\n";
+        // Fehlt: ans Ende, der Rest bleibt unverändert
+        assert_eq!(fstab_with_entry(base, mp, line).unwrap(), format!("{base}{line}\n"));
+        // Ohne Zeilenende am Schluss entsteht keine zusammengeklebte Zeile
+        assert_eq!(fstab_with_entry("UUID=1 / btrfs defaults 0 0", mp, line).unwrap(), format!("UUID=1 / btrfs defaults 0 0\n{line}\n"));
+        // Schon eingetragen (Abstände egal): nichts zu tun
+        assert_eq!(fstab_with_entry(&format!("{base}//nas/share\t/home/a\\040b/mnt  cifs user,noauto 0 0\n"), mp, line), None);
+        // Andere Freigabe am selben Mountpunkt wird ersetzt, auch doppelte Einträge
+        let old = format!("{base}//alt/x {mp} cifs user 0 0\n{line}\n");
+        assert_eq!(fstab_with_entry(&old, mp, line).unwrap(), format!("{base}{line}\n"));
     }
 
     #[cfg(windows)]

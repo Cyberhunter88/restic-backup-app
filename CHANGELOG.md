@@ -2,6 +2,19 @@
 
 ## [Unveröffentlicht]
 
+## [0.4.1]
+
+### Behoben
+- Linux mit Wayland (z. B. KDE Plasma): Das X des Fensters schickte die App nicht in den Hintergrund, das Fenster blieb einfach offen. Wayland kann ein Fenster nicht verstecken; die App läuft dort jetzt über XWayland, wo das geht. Ohne XWayland wird das Fenster stattdessen minimiert.
+
+### Neu
+- Linux: Das Einbinden der Freigabe fragt nicht mehr jedes Mal nach dem Benutzer-Passwort. Beim ersten Einbinden aus dem Fenster (oder über „Zeitplan aktivieren“ bzw. „Jetzt einrichten“ im Zeitplan-Tab) trägt die App die Freigabe einmalig in `/etc/fstab` ein (`user,noauto`); dafür wird ein einziges Mal nach dem Passwort gefragt. Danach bindet sie ohne Rückfrage ein, auch im Zeitplan. Die bisherige Datei bleibt als `/etc/fstab.restic-backup-app.bak` erhalten; ändern sich NAS, Freigabe oder SMB-Benutzer, wird die Zeile ersetzt.
+- Seitenleiste: Schaltfläche „Beenden“ beendet das Programm ganz (auch ohne Tray-Icon).
+
+### Geändert
+- Das X des Fensters schickt die App immer in den Hintergrund. Die Option dazu im Info-Tab entfällt.
+- Linux, Zeitplan-Tab: Die Karte „Automatisches Einbinden“ zeigt, ob das Einbinden eingerichtet ist. Die Schaltfläche „Credentials-Datei anlegen“ entfällt, die Datei schreibt die App bei jedem Einbinden selbst.
+
 ## [0.3.29]
 
 ### Behoben

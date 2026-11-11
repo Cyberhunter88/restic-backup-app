@@ -161,9 +161,21 @@ fn main() -> anyhow::Result<()> {
     if let Some(icon) = icon {
         viewport = viewport.with_icon(std::sync::Arc::new(icon));
     }
+    // Aus dem Fenster heraus darf die einmalige Einrichtung des Einbindens (Linux) nach dem Passwort fragen
+    smb::allow_prompts();
+    #[allow(unused_mut)]
+    let mut options = eframe::NativeOptions { viewport, ..Default::default() };
+    // Wayland kann kein Fenster verstecken: über XWayland laufen, damit das X die App in den Hintergrund schickt
+    #[cfg(target_os = "linux")]
+    if ui::prefer_x11() {
+        options.event_loop_builder = Some(Box::new(|b| {
+            use winit::platform::x11::EventLoopBuilderExtX11;
+            b.with_x11();
+        }));
+    }
     eframe::run_native(
         &format!("restic Backup {}", env!("CARGO_PKG_VERSION")),
-        eframe::NativeOptions { viewport, ..Default::default() },
+        options,
         Box::new(|cc| {
             ui::apply_theme(&cc.egui_ctx);
             let app = app::App::new(&cc.egui_ctx);
@@ -182,7 +194,7 @@ fn main() -> anyhow::Result<()> {
             });
             if cli.autostart {
                 // Mit Tray ganz verstecken, sonst minimieren
-                let cmd = if app.has_tray() { eframe::egui::ViewportCommand::Visible(false) } else { eframe::egui::ViewportCommand::Minimized(true) };
+                let cmd = if app.has_tray() { ui::hide_command() } else { eframe::egui::ViewportCommand::Minimized(true) };
                 cc.egui_ctx.send_viewport_cmd(cmd);
             }
             Ok(Box::new(app))

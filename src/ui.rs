@@ -252,3 +252,23 @@ mod tests {
         assert_eq!(status_color("Gespeichert."), OK);
     }
 }
+
+/// Lässt sich das Fenster verstecken? Unter Wayland geht das nicht (winit ignoriert den Befehl); deshalb läuft das
+/// Fenster dort über XWayland (`prefer_x11`), solange ein X-Server da ist.
+pub fn can_hide_window() -> bool {
+    !cfg!(target_os = "linux") || !env_set("WAYLAND_DISPLAY") || env_set("DISPLAY")
+}
+
+/// Linux mit Wayland und XWayland: Das Fenster soll X11 nutzen, damit das X es verstecken kann.
+pub fn prefer_x11() -> bool {
+    cfg!(target_os = "linux") && env_set("WAYLAND_DISPLAY") && env_set("DISPLAY")
+}
+
+fn env_set(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|v| !v.is_empty())
+}
+
+/// Befehl, der das Fenster in den Hintergrund schickt: verstecken, notfalls (reines Wayland) minimieren.
+pub fn hide_command() -> egui::ViewportCommand {
+    if can_hide_window() { egui::ViewportCommand::Visible(false) } else { egui::ViewportCommand::Minimized(true) }
+}
