@@ -8,7 +8,7 @@ pub fn message(warnings: bool, error: Option<&str>, on_success: bool) -> Option<
             let first = e.lines().next().unwrap_or(e);
             Some(("Backup fehlgeschlagen".into(), first.chars().take(200).collect()))
         }
-        (None, true) => Some(("Backup mit Warnungen".into(), "Einige Dateien waren nicht lesbar (z. B. von anderen Programmen gesperrt) oder eine Prüfung hatte Probleme – Details im Protokoll.".into())),
+        (None, true) => Some(("Backup mit Warnungen".into(), "Einige Dateien waren nicht lesbar (z. B. von anderen Programmen gesperrt), eine Prüfung hatte Probleme oder der Platz auf dem NAS wird knapp – Details im Protokoll.".into())),
         (None, false) if on_success => Some(("Backup erfolgreich".into(), "Das Backup wurde ohne Probleme abgeschlossen.".into())),
         (None, false) => None,
     }

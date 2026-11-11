@@ -45,6 +45,8 @@ pub struct Config {
     pub wake_to_run: bool,
     /// Meldung, wenn so viele Tage kein Backup gelungen ist (0 = aus)
     pub warn_after_days: u32,
+    /// Warnung nach dem Backup, wenn auf dem NAS weniger als so viele GB frei sind (0 = aus)
+    pub warn_free_gb: u32,
     /// Auch nach einem erfolgreichen Lauf eine Desktop-Meldung senden (sonst nur bei Warnung/Fehler)
     pub notify_success: bool,
     /// Fenster schließen schickt die App in den Tray (nur mit Tray); sonst beendet es sie
@@ -86,6 +88,7 @@ impl Default for Config {
             only_on_ac: false,
             wake_to_run: false,
             warn_after_days: 3,
+            warn_free_gb: 20,
             notify_success: false,
             close_to_tray: true,
             check_updates: true,
@@ -230,7 +233,7 @@ const CHECK_FMT: &str = "%Y-%m-%d %H:%M:%S";
 pub fn write_last_check(ok: bool) {
     if let Ok(p) = last_check_path() {
         let _ = std::fs::create_dir_all(p.parent().unwrap());
-        let _ = std::fs::write(p, format!("{}\t{}\n", chrono::Local::now().format(CHECK_FMT), if ok { "ok" } else { "fehler" }));
+        let _ = write_atomic(&p, &format!("{}\t{}\n", chrono::Local::now().format(CHECK_FMT), if ok { "ok" } else { "fehler" }));
     }
 }
 
@@ -558,8 +561,20 @@ pub fn take_show_window_request() -> bool {
 /// Ein Eintrag im lokalen Verlauf.
 pub struct HistoryEntry {
     pub time: String,
-    pub ok: bool,
+    pub result: RunResult,
     pub summary: String,
+}
+
+/// Eine Zeile aus `history.tsv` (`Zeit<TAB>ok|fehler|abbruch<TAB>Zusammenfassung`).
+fn parse_history_line(l: &str) -> Option<HistoryEntry> {
+    let mut it = l.splitn(3, '\t');
+    let time = it.next()?.into();
+    let result = match it.next()? {
+        "ok" => RunResult::Ok,
+        "abbruch" => RunResult::Cancelled,
+        _ => RunResult::Failed,
+    };
+    Some(HistoryEntry { time, result, summary: it.next().unwrap_or("").into() })
 }
 
 const HISTORY_MAX: usize = 200;
@@ -583,7 +598,7 @@ fn append_history(result: RunResult, lines: &[String]) -> Result<()> {
     let mut all: Vec<String> = std::fs::read_to_string(&p).unwrap_or_default().lines().map(String::from).collect();
     all.push(line);
     let skip = all.len().saturating_sub(HISTORY_MAX);
-    std::fs::write(&p, all[skip..].join("\n") + "\n")?;
+    write_atomic(&p, &(all[skip..].join("\n") + "\n"))?;
     Ok(())
 }
 
@@ -591,14 +606,7 @@ fn append_history(result: RunResult, lines: &[String]) -> Result<()> {
 pub fn read_history(n: usize) -> Vec<HistoryEntry> {
     let Ok(p) = history_path() else { return vec![] };
     let text = std::fs::read_to_string(p).unwrap_or_default();
-    text.lines()
-        .rev()
-        .take(n)
-        .filter_map(|l| {
-            let mut it = l.splitn(3, '\t');
-            Some(HistoryEntry { time: it.next()?.into(), ok: it.next()? == "ok", summary: it.next().unwrap_or("").into() })
-        })
-        .collect()
+    text.lines().rev().take(n).filter_map(parse_history_line).collect()
 }
 
 /// Schreibt das Protokoll des letzten Laufs (Zeitplan oder GUI) in `last-run.log` und ergänzt den Verlauf.
@@ -617,7 +625,7 @@ pub fn write_last_run(result: RunResult, lines: &[String]) -> Result<()> {
         RunResult::Cancelled => "ABGEBROCHEN",
     };
     let head = format!("{} – {word}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
-    std::fs::write(&p, format!("{head}\n{}\n", lines.join("\n")))?;
+    write_atomic(&p, &format!("{head}\n{}\n", lines.join("\n")))?;
     Ok(())
 }
 
@@ -720,6 +728,15 @@ mod tests {
         }
         assert_eq!(l.len(), SCHEDULE_LOG_MAX);
         assert_eq!(l.last().unwrap(), "t\tMeldung 499");
+    }
+
+    #[test]
+    fn history_line_parsed() {
+        let h = parse_history_line("10.11.2026 20:00\tabbruch\tBackup abgebrochen.").unwrap();
+        assert_eq!((h.time.as_str(), h.result, h.summary.as_str()), ("10.11.2026 20:00", RunResult::Cancelled, "Backup abgebrochen."));
+        assert_eq!(parse_history_line("t\tok\tx").unwrap().result, RunResult::Ok);
+        assert_eq!(parse_history_line("t\tfehler").unwrap().result, RunResult::Failed);
+        assert!(parse_history_line("nur-zeit").is_none());
     }
 
     #[test]

@@ -90,6 +90,12 @@ pub fn repo_overview(cfg: &Config) -> Result<RepoOverview> {
     Ok(RepoOverview { size: stats.size, snapshots: r.snapshots()?.len(), free: smb::free_space(&r.repo) })
 }
 
+/// Warntext, wenn auf dem NAS weniger als `min_gb` GB frei sind (0 = aus, unbekannter Platz = keine Warnung).
+pub fn low_space_warning(free: Option<u64>, min_gb: u32) -> Option<String> {
+    let free = free?;
+    (min_gb > 0 && free < u64::from(min_gb) * 1024 * 1024 * 1024).then(|| format!("Warnung: Auf dem NAS sind nur noch {} frei (Warnschwelle: {min_gb} GB).", crate::ui::human_bytes(free)))
+}
+
 /// So viele nicht lesbare Dateien je Lauf werden einzeln ins Protokoll geschrieben.
 const MAX_LOGGED_FILE_ERRORS: usize = 10;
 
@@ -113,7 +119,7 @@ fn backup_sources(r: &Restic, cfg: &Config, host: &str, cancel: &AtomicBool, mut
     let groups: Vec<&[String]> = if cfg.separate_snapshots { cfg.sources.chunks(1).collect() } else { vec![&cfg.sources[..]] };
     let mut outcome = BackupOutcome::default();
     let mut errors = vec![];
-    let (pack_size_mib, connections) = crate::restic::tuning_for(r.version());
+    let tuning = crate::restic::tuning_for(r.version());
     let excludes = excludes_with_data_dir(&cfg.excludes);
     for group in &groups {
         if cancel.load(Ordering::Relaxed) {
@@ -130,9 +136,10 @@ fn backup_sources(r: &Restic, cfg: &Config, host: &str, cancel: &AtomicBool, mut
                 exclude_if_present: &cfg.exclude_if_present,
                 exclude_larger_than: &cfg.exclude_larger_than,
                 host,
-                no_scan: cfg.no_scan,
-                pack_size_mib,
-                connections,
+                no_scan: cfg.no_scan && tuning.no_scan,
+                pack_size_mib: tuning.pack_size_mib,
+                connections: tuning.connections,
+                read_concurrency: tuning.read_concurrency,
             },
             cancel,
             |e| match e {
@@ -228,6 +235,11 @@ pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log
                 outcome.warnings = true;
             }
         }
+        // Nach dem Aufräumen messen: Ein volles NAS ließe das nächste Backup scheitern
+        if let Some(w) = low_space_warning(smb::free_space(&r.repo), cfg.warn_free_gb) {
+            log(w);
+            outcome.warnings = true;
+        }
         // Regelmäßige Teilprüfung nur im Zeitplan-Lauf; ein Fehler dort ist eine Warnung, kein Backup-Fehler
         if !keep_mounted && crate::config::check_due(crate::config::read_last_check().as_ref(), cfg.check_interval_days, chrono::Local::now().naive_local()) {
             log(format!("Prüfe Repository ({} % der Daten) …", cfg.check_subset_percent));
@@ -270,6 +282,15 @@ mod tests {
         assert_eq!(v, vec!["*.tmp".to_string(), d.clone()]);
         // nicht doppelt
         assert_eq!(excludes_with_data_dir(&v).len(), 2);
+    }
+
+    #[test]
+    fn low_space_threshold() {
+        const GB: u64 = 1024 * 1024 * 1024;
+        assert!(low_space_warning(Some(5 * GB), 20).unwrap().contains("5.0 GB"));
+        assert_eq!(low_space_warning(Some(20 * GB), 20), None);
+        assert_eq!(low_space_warning(Some(GB), 0), None);
+        assert_eq!(low_space_warning(None, 20), None);
     }
 
     fn restic_available() -> bool {

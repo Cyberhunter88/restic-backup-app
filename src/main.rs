@@ -7,6 +7,7 @@ mod config;
 mod job;
 mod notify;
 mod restic;
+mod restore;
 mod schedule;
 mod scheduled;
 mod secrets;

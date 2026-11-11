@@ -1,3 +1,11 @@
+//! GUI-Zustand (`App`), Hintergrund-Aufgaben und ihre Meldungen (`Msg`), Seitenleiste. Die Oberfläche der
+//! einzelnen Tabs liegt je in einem eigenen Untermodul (`app/<name>_tab.rs`, jeweils ein `impl App`-Block).
+mod about_tab;
+mod backup_tab;
+mod schedule_tab;
+mod settings_tab;
+mod snapshots_tab;
+
 use crate::config::Config;
 use crate::restic::{BackupEvent, DiffEntry, Node, Snapshot};
 use crate::secrets::{self, Secret};
@@ -34,6 +42,10 @@ enum Msg {
     SchedStatus(schedule::Status),
     /// Ergebnis von „Zeitplan prüfen“
     SchedCheck(String),
+    /// „Zeitplan aktivieren“ bzw. „entfernen“ ist fertig (Statustext)
+    SchedDone(String),
+    /// Fortschritt der Wiederherstellung (0.0 bis 1.0)
+    RestoreProgress(f32),
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -109,6 +121,18 @@ pub struct App {
     restore_target: String,
     unlock_all: bool,
     restored_to: Option<String>,
+    /// Wiederherstellen an den Originalort statt in den Zielordner
+    restore_in_place: bool,
+    restore_overwrite: crate::restore::Overwrite,
+    restore_verify: bool,
+    /// Wiederherstellung am Originalort, die noch bestätigt werden muss: `(Snapshot-ID, Pfad oder ganzer Snapshot)`
+    confirm_restore: Option<(String, Option<String>)>,
+    /// Die laufende Aufgabe lässt sich abbrechen (Wiederherstellung, Prüfung, Suche)
+    cancellable: bool,
+    /// Fortschritt der laufenden Aufgabe, falls bekannt
+    task_progress: Option<f32>,
+    /// Nach „Zeitplan aktivieren/entfernen“ die Diagnose neu laden (braucht den egui-Kontext)
+    pending_sched_status: bool,
     status: String,
     cancel: Arc<AtomicBool>,
     /// Diagnose im Zeitplan-Tab (einmal geladen statt bei jedem Frame abgefragt)
@@ -121,35 +145,6 @@ pub struct App {
     sched_mount_ready: bool,
     /// Wann zuletzt auf „Backup überfällig“ geprüft wurde
     overdue_checked: std::time::Instant,
-}
-
-/// Liste mit Löschknopf je Eintrag.
-fn removable_list(ui: &mut egui::Ui, items: &mut Vec<String>) {
-    let mut del = None;
-    for (i, s) in items.iter().enumerate() {
-        ui.horizontal(|ui| {
-            if ui.small_button("✖").on_hover_text("Entfernen").clicked() {
-                del = Some(i);
-            }
-            ui.label(RichText::new(s).monospace());
-        });
-    }
-    if let Some(i) = del {
-        items.remove(i);
-    }
-}
-
-/// Beschriftetes Textfeld in einem Grid.
-fn field(ui: &mut egui::Ui, label: &str, value: &mut String, hint: &str) {
-    ui.label(label);
-    ui.add(egui::TextEdit::singleline(value).desired_width(340.0).hint_text(hint));
-    ui.end_row();
-}
-
-fn secret_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
-    ui.label(label);
-    ui.add(egui::TextEdit::singleline(value).password(true).desired_width(340.0).hint_text("leer = unverändert"));
-    ui.end_row();
 }
 
 impl App {
@@ -202,6 +197,13 @@ impl App {
             restore_target: String::new(),
             unlock_all: false,
             restored_to: None,
+            restore_in_place: false,
+            restore_overwrite: crate::restore::Overwrite::Always,
+            restore_verify: false,
+            confirm_restore: None,
+            cancellable: false,
+            task_progress: None,
+            pending_sched_status: false,
             status: String::new(),
             cancel: Arc::new(AtomicBool::new(false)),
             sched_status: None,
@@ -342,8 +344,13 @@ impl App {
         });
     }
 
+    /// Startet eine Hintergrund-Aufgabe und sperrt die Oberfläche (`busy`), bis ihre Meldung eintrifft.
+    /// Ein alter Abbruch-Wunsch gilt nicht für die neue Aufgabe; ob sie abbrechbar ist, setzt der Aufrufer danach.
     fn spawn(&mut self, ctx: &egui::Context, f: impl FnOnce(Sender<Msg>) + Send + 'static) {
         self.busy = true;
+        self.cancel.store(false, Ordering::Relaxed);
+        self.cancellable = false;
+        self.task_progress = None;
         let tx = self.tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
@@ -375,6 +382,11 @@ impl App {
             self.external_cancel = false;
         }
         self.external_run = now;
+    }
+
+    /// Statustext für eine gescheiterte Aufgabe; ein Abbruch durch den Nutzer ist kein Fehler.
+    fn error_text(&self, e: String) -> String {
+        if self.cancel.load(Ordering::Relaxed) { "Abgebrochen.".into() } else { format!("FEHLER: {e}") }
     }
 
     fn poll(&mut self) {
@@ -453,7 +465,7 @@ impl App {
                             self.status = if n.len() >= FIND_LIMIT { format!("Mehr als {FIND_LIMIT} Treffer – Suchbegriff genauer fassen.") } else { String::new() };
                             self.found = Some(n);
                         }
-                        Err(e) => self.status = format!("FEHLER: {e}"),
+                        Err(e) => self.status = self.error_text(e),
                     }
                 }
                 Msg::RepoInfo(r) => {
@@ -483,7 +495,10 @@ impl App {
                 Msg::Info(r) => {
                     self.busy = false;
                     self.last_check = crate::config::read_last_check();
-                    self.status = r.unwrap_or_else(|e| format!("FEHLER: {e}"));
+                    self.status = match r {
+                        Ok(m) => m,
+                        Err(e) => self.error_text(e),
+                    };
                 }
                 Msg::Update(r, manual) => {
                     match r {
@@ -501,14 +516,22 @@ impl App {
                 }
                 Msg::SchedStatus(s) => self.sched_status = Some(s),
                 Msg::SchedCheck(m) => self.sched_check = m,
+                Msg::SchedDone(m) => {
+                    self.busy = false;
+                    self.status = m;
+                    self.pending_sched_status = true;
+                }
+                Msg::RestoreProgress(p) => self.task_progress = Some(p),
                 Msg::Restored(r) => {
                     self.busy = false;
                     match r {
+                        // Leeres Ziel: am Originalort wiederhergestellt (kein einzelner Ordner zum Öffnen)
+                        Ok(target) if target.is_empty() => self.status = "Wiederherstellung am Originalort abgeschlossen.".into(),
                         Ok(target) => {
                             self.status = format!("Wiederherstellung nach {target} abgeschlossen.");
                             self.restored_to = Some(target);
                         }
-                        Err(e) => self.status = format!("FEHLER: {e}"),
+                        Err(e) => self.status = self.error_text(e),
                     }
                 }
             }
@@ -579,895 +602,6 @@ impl App {
         });
     }
 
-    fn backup_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Backup");
-        ui.add_space(4.0);
-        if !self.cfg.is_ready() {
-            ui::card(ui, Some("Einrichtung nötig"), |ui| {
-                ui.label("Trage zuerst NAS-Host, Freigabe und mindestens einen Quellordner ein.");
-                ui.add_space(6.0);
-                if ui.add(ui::primary("Zu den Einstellungen")).clicked() {
-                    self.goto(ui.ctx(), Tab::Settings);
-                }
-            });
-            return;
-        }
-
-        // Kopfkarte: Status des letzten Laufs + Startknopf
-        let ctx = ui.ctx().clone();
-        ui::card(ui, None, |ui| {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("Letzter Lauf").color(MUTED).size(13.0));
-                    match self.last_run.as_deref().and_then(|l| l.lines().next()) {
-                        Some(head) => {
-                            ui.horizontal(|ui| {
-                                if head.contains("ERFOLGREICH") {
-                                    ui::badge(ui, "Erfolgreich", OK);
-                                } else if head.contains("ABGEBROCHEN") {
-                                    ui::badge(ui, "Abgebrochen", WARN);
-                                } else {
-                                    ui::badge(ui, "Fehler", ERR);
-                                }
-                                ui.label(head.split(" – ").next().unwrap_or(head));
-                                if let Some((age, overdue)) = ui::age_text(head, chrono::Local::now().naive_local()) {
-                                    ui.label(RichText::new(format!("({age})")).color(if overdue { WARN } else { MUTED }));
-                                    if overdue {
-                                        ui::badge(ui, "Überfällig", WARN);
-                                    }
-                                }
-                            });
-                        }
-                        None => ui::badge(ui, "Noch kein Backup", MUTED),
-                    }
-                    if let Some(until) = self.active_pause() {
-                        ui::badge(ui, &format!("Zeitplan pausiert bis {}", until.format("%d.%m. %H:%M")), WARN);
-                    }
-                    if let Some(v) = &self.new_version {
-                        ui::badge(ui, &format!("Neue Version {v} verfügbar (Info-Tab)"), ACCENT);
-                    }
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_enabled_ui(!self.busy && self.external_run.is_none(), |ui| {
-                        if ui.add(ui::primary("▶  Backup jetzt starten").min_size(egui::vec2(210.0, 44.0))).clicked() {
-                            self.start_backup(&ctx);
-                        }
-                    });
-                });
-            });
-        });
-
-        // Kennzahlen
-        ui.columns(3, |cols| {
-            let n = self.cfg.sources.len();
-            let facts = [
-                ("Quellordner".to_string(), format!("{n}")),
-                ("Zeitplan".to_string(), self.schedule_summary()),
-                ("Aufbewahrung".to_string(), format!("{}T / {}W / {}M", self.cfg.keep_daily, self.cfg.keep_weekly, self.cfg.keep_monthly)),
-            ];
-            for (col, (label, value)) in cols.iter_mut().zip(facts) {
-                ui::card(col, None, |ui| {
-                    ui.label(RichText::new(label).color(MUTED).size(13.0));
-                    ui.label(RichText::new(value).strong().size(19.0));
-                });
-            }
-        });
-
-        if self.cfg.is_ready() {
-            ui::card(ui, Some("Repository"), |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    match &self.overview {
-                        Some(o) => {
-                            ui.label(format!("Größe: {}", ui::human_bytes(o.size)));
-                            ui.label(format!("Snapshots: {}", o.snapshots));
-                            if let Some(f) = o.free {
-                                ui.label(format!("Frei auf dem NAS: {}", ui::human_bytes(f)));
-                            }
-                        }
-                        None => ui::hint(ui, "Noch nicht geladen (verbindet kurz mit dem NAS)."),
-                    }
-                    if ui.add_enabled(!self.busy, egui::Button::new(if self.overview.is_some() { "⟳ Aktualisieren" } else { "Laden" })).clicked() {
-                        self.load_overview(&ctx);
-                    }
-                });
-                ui::status(ui, &self.overview_msg);
-                let now = chrono::Local::now().naive_local();
-                let due = crate::config::check_due(self.last_check.as_ref(), self.cfg.check_interval_days, now);
-                match &self.last_check {
-                    Some(c) => {
-                        let text = format!("Letzte Prüfung: {}{}", c.time.format("%d.%m.%Y %H:%M"), if c.ok { "" } else { " – FEHLGESCHLAGEN" });
-                        ui.label(RichText::new(text).color(if !c.ok { ERR } else if due { WARN } else { MUTED }).size(13.0));
-                    }
-                    None if self.cfg.check_interval_days > 0 => ui::hint(ui, "Noch keine Prüfung durchgeführt (läuft automatisch im Zeitplan-Lauf)."),
-                    None => {}
-                }
-            });
-        }
-
-        if self.busy && !self.log.is_empty() {
-            // Aktueller Schritt als Titel; das Protokoll darunter zeigt ihn nicht doppelt
-            let title = self.log.iter().rev().find(|l| !l.starts_with("Snapshot")).cloned().unwrap_or_else(|| "Läuft …".into());
-            ui::card(ui, Some(&title), |ui| {
-                ui.horizontal(|ui| {
-                    if self.progress_text.is_empty() {
-                        ui.add(egui::ProgressBar::new(self.progress).show_percentage().desired_width(ui.available_width() - 110.0));
-                    } else {
-                        ui.label(&self.progress_text);
-                        ui.add_space((ui.available_width() - 110.0).max(0.0));
-                    }
-                    if ui.button("Abbrechen").clicked() {
-                        self.cancel.store(true, Ordering::Relaxed);
-                    }
-                });
-            });
-        }
-
-        // Backup in einem anderen Prozess (Zeitplan): anzeigen und abbrechen lassen
-        if let Some(run) = self.external_run.clone() {
-            let title = match run.started {
-                Some(t) => format!("Zeitplan-Backup läuft (seit {})", t.format("%H:%M")),
-                None => "Zeitplan-Backup läuft".to_string(),
-            };
-            ui::card(ui, Some(&title), |ui| {
-                if !run.text.is_empty() {
-                    ui::hint(ui, &run.text);
-                }
-                ui.horizontal(|ui| {
-                    ui.add(egui::ProgressBar::new(run.percent).show_percentage().desired_width(ui.available_width() - 110.0));
-                    if ui.add_enabled(!self.external_cancel, egui::Button::new("Abbrechen")).clicked() {
-                        crate::config::request_cancel();
-                        self.external_cancel = true;
-                    }
-                });
-                if self.external_cancel {
-                    ui::hint(ui, "Abbruch angefordert – der Lauf endet nach dem aktuellen Schritt.");
-                }
-            });
-        }
-
-        // Der neueste Lauf steht schon oben unter „Letzter Lauf“
-        if self.history.len() > 1 {
-            ui::card(ui, Some("Frühere Läufe"), |ui| {
-                egui::Grid::new("history").num_columns(3).striped(true).spacing([16.0, 6.0]).show(ui, |ui| {
-                    for h in self.history.iter().skip(1) {
-                        ui.label(RichText::new(&h.time).color(MUTED));
-                        if h.ok { ui::badge(ui, "OK", OK) } else { ui::badge(ui, "Fehler", ERR) }
-                        ui.label(&h.summary);
-                        ui.end_row();
-                    }
-                });
-            });
-        }
-
-        ui::card(ui, Some("Protokoll"), |ui| {
-            let from_disk: Vec<String>;
-            let lines: &[String] = if self.log.is_empty() {
-                from_disk = self.last_run.as_deref().map(|l| l.lines().skip(1).map(String::from).collect()).unwrap_or_default();
-                &from_disk
-            } else {
-                &self.log
-            };
-            if lines.is_empty() {
-                ui::hint(ui, "Noch nichts protokolliert. Starte ein Backup, um den Verlauf zu sehen.");
-            }
-            egui::ScrollArea::vertical().id_salt("log").stick_to_bottom(true).auto_shrink([false, true]).max_height(ui.available_height().max(120.0)).show(ui, |ui| {
-                for l in lines {
-                    let color = if l.starts_with("FEHLER") { ERR } else if l.starts_with("Warnung") { WARN } else { ui.visuals().text_color() };
-                    ui.label(RichText::new(l).monospace().color(color));
-                }
-            });
-        });
-    }
-
-    fn snapshots_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Snapshots");
-        ui.add_space(4.0);
-        let ctx = ui.ctx().clone();
-        ui::card(ui, None, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                if ui.add_enabled(!self.busy, egui::Button::new("⟳  Neu laden")).clicked() {
-                    self.load_snapshots(&ctx);
-                }
-                if ui.add_enabled(!self.busy, egui::Button::new("🔍  Repository prüfen")).on_hover_text("restic check").clicked() {
-                    let cfg = self.cfg.clone();
-                    self.status = "Prüfe Repository …".into();
-                    self.spawn(&ctx, move |tx| {
-                        let r = job::open(&cfg).and_then(|r| r.check());
-                        crate::config::write_last_check(r.is_ok());
-                        let _ = tx.send(Msg::Info(r.map(|_| "Repository ist in Ordnung.".to_string()).map_err(|e| format!("{e:#}"))));
-                    });
-                }
-                let all = self.unlock_all;
-                if ui
-                    .add_enabled(!self.busy, egui::Button::new("🔓  Sperren entfernen"))
-                    .on_hover_text(if all { "restic unlock --remove-all" } else { "restic unlock (nur veraltete Sperren)" })
-                    .clicked()
-                {
-                    let cfg = self.cfg.clone();
-                    self.status = "Entferne Sperren …".into();
-                    self.spawn(&ctx, move |tx| {
-                        let r = job::unlock_repo(&cfg, all);
-                        let _ = tx.send(Msg::Info(r.map_err(|e| format!("{e:#}"))));
-                    });
-                }
-                ui.checkbox(&mut self.unlock_all, "auch aktive")
-                    .on_hover_text("Entfernt ALLE Sperren, auch die eines gerade laufenden Backups (z. B. von einem anderen Rechner). Nur nutzen, wenn sicher nichts läuft.");
-                ui::status(ui, &self.status);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Wiederherstellen nach:");
-                ui.add(egui::TextEdit::singleline(&mut self.restore_target).desired_width(ui.available_width() - 110.0).hint_text("Zielordner wählen"));
-                if ui.button("Wählen …").clicked() {
-                    if let Some(p) = rfd::FileDialog::new().pick_folder() {
-                        self.restore_target = p.to_string_lossy().into_owned();
-                    }
-                }
-            });
-            if let Some(path) = self.restored_to.clone() {
-                if ui.link(format!("📂 {path} im Dateimanager öffnen")).clicked() {
-                    update::open_url(&path);
-                }
-            }
-        });
-
-        let busy = self.busy;
-        let mut to_select = None;
-        let now = chrono::Local::now();
-        let mut folders: Vec<String> = self.snapshots.iter().flat_map(|s| s.paths.iter().cloned()).collect();
-        folders.sort();
-        folders.dedup();
-        if self.snap_folder.as_ref().is_some_and(|f| !folders.contains(f)) {
-            self.snap_folder = None;
-        }
-        let shown = self.snapshots.iter().filter(|s| ui::snapshot_matches(s, &self.snap_filter, self.snap_folder.as_deref(), self.snap_range, now)).count();
-        let title = if shown == self.snapshots.len() { format!("Sicherungen ({shown})") } else { format!("Sicherungen ({shown} von {})", self.snapshots.len()) };
-        ui::card(ui, Some(&title), |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.snap_filter).hint_text("🔍 Datum, Rechner oder Pfad").desired_width(220.0));
-                egui::ComboBox::from_id_salt("snap_folder").selected_text(self.snap_folder.clone().unwrap_or_else(|| "Alle Ordner".into())).width(220.0).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.snap_folder, None, "Alle Ordner");
-                    for f in &folders {
-                        ui.selectable_value(&mut self.snap_folder, Some(f.clone()), f);
-                    }
-                });
-                for (r, name) in ui::SnapRange::ALL {
-                    ui.selectable_value(&mut self.snap_range, r, name);
-                }
-            });
-            egui::ScrollArea::vertical().id_salt("snaps").max_height(190.0).auto_shrink([false, true]).show(ui, |ui| {
-                ui.add_enabled_ui(!busy, |ui| {
-                    egui::Grid::new("snap_grid").num_columns(4).striped(true).min_col_width(80.0).show(ui, |ui| {
-                        for h in ["ID", "Zeitpunkt", "Rechner", "Pfade"] {
-                            ui.label(RichText::new(h).color(MUTED).size(13.0));
-                        }
-                        ui.end_row();
-                        for s in &self.snapshots {
-                            if !ui::snapshot_matches(s, &self.snap_filter, self.snap_folder.as_deref(), self.snap_range, now) {
-                                continue;
-                            }
-                            let when = ui::short_time(&s.time);
-                            let paths = s.paths.join(", ");
-                            let sel = self.selected.as_deref() == Some(&s.id);
-                            if ui.selectable_label(sel, RichText::new(&s.short_id).monospace()).clicked() {
-                                to_select = Some(s.id.clone());
-                            }
-                            ui.label(when);
-                            ui.label(&s.hostname);
-                            ui.label(RichText::new(paths).color(MUTED));
-                            ui.end_row();
-                        }
-                    });
-                });
-            });
-            if self.snapshots.is_empty() && !self.busy {
-                ui::hint(ui, "Keine Snapshots gefunden.");
-            }
-        });
-        if let Some(id) = to_select {
-            self.selected = Some(id);
-            self.compare_with = None;
-            self.diff = None;
-            self.diff_msg.clear();
-            self.dir = "/".into();
-            self.found = None;
-            self.load_dir(&ctx);
-        }
-        let Some(id) = self.selected.clone() else {
-            ui::hint(ui, "Wähle einen Snapshot, um seine Dateien zu durchsuchen.");
-            return;
-        };
-
-        let mut enter = None;
-        let mut restore = None;
-        let mut search = false;
-        let mut clear_search = false;
-        let can_restore = !self.busy && !self.restore_target.is_empty();
-        ui::card(ui, Some("Dateien im Snapshot"), |ui| {
-            ui.horizontal(|ui| {
-                if ui.add_enabled(self.dir != "/" && !self.busy, egui::Button::new("↑")).on_hover_text("Eine Ebene hoch").clicked() {
-                    let parent = std::path::Path::new(&self.dir).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or("/".into());
-                    self.dir = if parent.is_empty() { "/".into() } else { parent };
-                    self.load_dir(&ctx);
-                }
-                ui.label(RichText::new(&self.dir).monospace());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_enabled(can_restore, egui::Button::new("Ganzen Snapshot wiederherstellen")).on_disabled_hover_text("Zuerst ein Ziel wählen").clicked() {
-                        restore = Some((None::<String>, true));
-                    }
-                });
-            });
-            ui.horizontal(|ui| {
-                let r = ui.add(egui::TextEdit::singleline(&mut self.find_term).hint_text("🔍 Datei im Snapshot suchen (Name, * und ? möglich)").desired_width(340.0));
-                let enter_pressed = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if (ui.add_enabled(!self.busy && !self.find_term.trim().is_empty(), egui::Button::new("Suchen")).clicked() || enter_pressed) && !self.busy && !self.find_term.trim().is_empty() {
-                    search = true;
-                }
-                if self.found.is_some() && ui.button("✖ Suche beenden").clicked() {
-                    clear_search = true;
-                }
-            });
-            if let Some(f) = &self.found {
-                ui::hint(ui, &format!("{} Treffer für „{}“ – Pfade beginnen bei Windows mit dem Laufwerksbuchstaben.", f.len(), self.find_term.trim()));
-            }
-            let searching = self.found.is_some();
-            let list: &[Node] = self.found.as_deref().unwrap_or(&self.nodes);
-            egui::ScrollArea::vertical().id_salt("nodes").auto_shrink([false, false]).show(ui, |ui| {
-                egui::Grid::new("node_grid").num_columns(3).striped(true).min_col_width(90.0).show(ui, |ui| {
-                    for n in list {
-                        if searching {
-                            // Treffer: voller Pfad, Ordner lassen sich öffnen
-                            if n.kind == "dir" {
-                                if ui.add_enabled(!self.busy, egui::Button::new(format!("📁 {}", n.path)).frame(false)).clicked() {
-                                    enter = Some(n.path.clone());
-                                    clear_search = true;
-                                }
-                                ui.label("");
-                            } else {
-                                ui.label(&n.path);
-                                ui.label(RichText::new(ui::human_bytes(n.size)).color(MUTED));
-                            }
-                        } else if n.kind == "dir" {
-                            if ui.add_enabled(!self.busy, egui::Button::new(format!("📁 {}", n.name)).frame(false)).clicked() {
-                                enter = Some(n.path.clone());
-                            }
-                            ui.label("");
-                        } else {
-                            ui.label(&n.name);
-                            ui.label(RichText::new(ui::human_bytes(n.size)).color(MUTED));
-                        }
-                        if ui.add_enabled(can_restore, egui::Button::new("Wiederherstellen")).on_disabled_hover_text("Zuerst ein Ziel wählen").clicked() {
-                            restore = Some((Some(n.path.clone()), false));
-                        }
-                        ui.end_row();
-                    }
-                });
-            });
-        });
-        if clear_search {
-            self.found = None;
-        }
-        if search {
-            let (cfg, term, snap) = (self.cfg.clone(), self.find_term.clone(), id.clone());
-            self.status = "Suche …".into();
-            self.spawn(&ctx, move |tx| {
-                let r = job::open(&cfg).and_then(|r| r.find(&snap, &term, FIND_LIMIT));
-                let _ = tx.send(Msg::Found(r.map_err(|e| format!("{e:#}"))));
-            });
-        }
-        if let Some(d) = enter {
-            self.dir = d;
-            self.load_dir(&ctx);
-        }
-        if let Some((include, _)) = restore {
-            self.restore(&ctx, id.clone(), include);
-        }
-        self.diff_card(ui, &ctx, &id);
-    }
-
-    /// Vergleicht den gewählten Snapshot mit einem anderen (`restic diff`).
-    fn diff_card(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, id: &str) {
-        let others: Vec<(String, String)> = self.snapshots.iter().filter(|s| s.id != id).map(|s| (s.id.clone(), format!("{}  {}", s.short_id, ui::short_time(&s.time)))).collect();
-        let busy = self.busy;
-        let mut run = false;
-        ui::card(ui, Some("Änderungen gegenüber einem anderen Snapshot"), |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Vergleichen mit");
-                let shown = others.iter().find(|(i, _)| Some(i) == self.compare_with.as_ref()).map(|(_, l)| l.clone()).unwrap_or_else(|| "Snapshot wählen …".into());
-                egui::ComboBox::from_id_salt("compare_with").selected_text(shown).width(240.0).show_ui(ui, |ui| {
-                    for (i, l) in &others {
-                        ui.selectable_value(&mut self.compare_with, Some(i.clone()), l);
-                    }
-                });
-                if ui.add_enabled(!busy && self.compare_with.is_some(), egui::Button::new("Vergleichen")).clicked() {
-                    run = true;
-                }
-            });
-            ui::status(ui, &self.diff_msg);
-            if let Some(d) = &self.diff {
-                const MAX: usize = 500;
-                let (add, del, chg) = (d.iter().filter(|e| e.modifier == "+").count(), d.iter().filter(|e| e.modifier == "-").count(), d.iter().filter(|e| e.modifier != "+" && e.modifier != "-").count());
-                ui.label(format!("{add} nur im gewählten Snapshot (+), {del} nur im anderen (−), {chg} geändert"));
-                if d.is_empty() {
-                    ui::hint(ui, "Keine Unterschiede.");
-                }
-                egui::ScrollArea::vertical().id_salt("diff").max_height(220.0).auto_shrink([false, true]).show(ui, |ui| {
-                    for e in d.iter().take(MAX) {
-                        let color = match e.modifier.as_str() {
-                            "+" => OK,
-                            "-" => ERR,
-                            _ => WARN,
-                        };
-                        ui.label(RichText::new(format!("{}  {}", if e.modifier == "-" { "−" } else { e.modifier.as_str() }, e.path)).monospace().color(color));
-                    }
-                    if d.len() > MAX {
-                        ui::hint(ui, &format!("… und {} weitere", d.len() - MAX));
-                    }
-                });
-            }
-        });
-        if run {
-            if let Some(other) = self.compare_with.clone() {
-                let (cfg, base) = (self.cfg.clone(), id.to_string());
-                self.diff = None;
-                self.diff_msg = "Vergleiche …".into();
-                self.spawn(ctx, move |tx| {
-                    let r = job::open(&cfg).and_then(|r| r.diff(&other, &base));
-                    let _ = tx.send(Msg::Diff(r.map_err(|e| format!("{e:#}"))));
-                });
-            }
-        }
-    }
-
-    fn load_dir(&mut self, ctx: &egui::Context) {
-        let (cfg, id, dir) = (self.cfg.clone(), self.selected.clone().unwrap_or_default(), self.dir.clone());
-        self.spawn(ctx, move |tx| {
-            let r = job::open(&cfg).and_then(|r| r.ls(&id, &dir));
-            let _ = tx.send(Msg::Nodes(r.map_err(|e| format!("{e:#}"))));
-        });
-    }
-
-    fn restore(&mut self, ctx: &egui::Context, id: String, include: Option<String>) {
-        let (cfg, target) = (self.cfg.clone(), self.restore_target.clone());
-        self.status = "Stelle wieder her …".into();
-        self.restored_to = None;
-        self.spawn(ctx, move |tx| {
-            let r = job::open(&cfg).and_then(|r| r.restore(&id, &target, include.as_deref()));
-            let _ = tx.send(Msg::Restored(r.map(|_| target).map_err(|e| format!("{e:#}"))));
-        });
-    }
-
-    fn settings_tab(&mut self, ui: &mut egui::Ui) {
-        // Speichern-Leiste bleibt unten sichtbar, der Rest scrollt
-        egui::Panel::bottom("save_bar").frame(Frame::new().fill(ui::BG).inner_margin(Margin::symmetric(0, 10))).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if ui.add(ui::primary("Speichern")).clicked() {
-                    self.status = match self.save() {
-                        Ok(()) => "Gespeichert.".into(),
-                        Err(e) => format!("FEHLER: {e:#}"),
-                    };
-                }
-                ui::status(ui, &self.status);
-            });
-        });
-        ui.heading("Einstellungen");
-        ui.add_space(4.0);
-        if self.busy {
-            ui::hint(ui, "Gesperrt, solange ein Lauf aktiv ist.");
-        }
-        let locked = self.busy;
-        egui::ScrollArea::vertical().id_salt("settings_scroll").auto_shrink(false).show(ui, |ui| {
-            ui.add_enabled_ui(!locked, |ui| {
-            ui::card(ui, Some("NAS-Verbindung"), |ui| {
-                egui::Grid::new("nas").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
-                    field(ui, "NAS-Host", &mut self.cfg.host, "z. B. nas.local");
-                    field(ui, "Freigabe", &mut self.cfg.share, "Name der SMB-Freigabe");
-                    field(ui, "SMB-Benutzer", &mut self.cfg.smb_user, "");
-                    secret_field(ui, "SMB-Passwort", &mut self.smb_pw);
-                });
-            });
-
-            ui::card(ui, Some("Repository"), |ui| {
-                egui::Grid::new("repo").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
-                    field(ui, "Unterordner", &mut self.cfg.subpath, "Ordner des restic-Repos in der Freigabe");
-                    secret_field(ui, "Repo-Passwort", &mut self.repo_pw);
-                    field(ui, "restic-Programm", &mut self.cfg.restic_bin, "restic");
-                    field(ui, "Rechnername", &mut self.cfg.backup_host, "leer = Name dieses Rechners (fest wählen, falls er sich ändert)");
-                });
-                ui.checkbox(&mut self.cfg.allow_init, "Neues Repo anlegen, falls keins existiert");
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(!self.busy, egui::Button::new("Repo prüfen")).clicked() {
-                        let cfg = self.cfg.clone();
-                        self.repo_msg = "Prüfe Repository …".into();
-                        self.spawn(ui.ctx(), move |tx| {
-                            let _ = tx.send(Msg::RepoInfo(job::describe_repo(&cfg).map_err(|e| format!("{e:#}"))));
-                        });
-                    }
-                    ui::status(ui, &self.repo_msg);
-                });
-                ui::hint(ui, "Bestehendes Repo verwenden: Freigabe und Unterordner wie im Repo angeben, Passwort eintragen, dann „Repo prüfen“.");
-            });
-
-            ui::card(ui, Some("Quellordner"), |ui| {
-                if self.cfg.sources.is_empty() {
-                    ui::hint(ui, "Noch keine Ordner ausgewählt.");
-                }
-                removable_list(ui, &mut self.cfg.sources);
-                ui.checkbox(&mut self.cfg.separate_snapshots, "Jeden Ordner als eigenen Snapshot sichern");
-                ui::hint_long(ui, "hint_sep", "Je Ordner ein Snapshot; die Aufbewahrung gilt dann je Ordner.", "Z. B. getrennte Snapshots für C:\\Users\\admin und C:\\Users\\xyz. Bereits vorhandene gemeinsame Snapshots bleiben bestehen und müssen bei Bedarf manuell gelöscht werden.");
-                if ui.button("＋  Ordner hinzufügen …").clicked() {
-                    if let Some(p) = rfd::FileDialog::new().pick_folder() {
-                        let p = p.to_string_lossy().into_owned();
-                        if !self.cfg.sources.contains(&p) {
-                            self.cfg.sources.push(p);
-                        }
-                    }
-                }
-            });
-
-            ui::card(ui, Some("Ausschlüsse"), |ui| {
-                ui::hint(ui, "Muster wie *.tmp oder **/node_modules – eine Liste mit einem Muster pro Zeile kann direkt eingefügt werden");
-                removable_list(ui, &mut self.cfg.excludes);
-                ui.add(egui::TextEdit::multiline(&mut self.new_exclude).hint_text("Muster hier einfügen (ein Muster pro Zeile)").desired_rows(3).desired_width(f32::INFINITY));
-                ui.horizontal(|ui| {
-                    if ui.button("Hinzufügen").clicked() && !self.new_exclude.trim().is_empty() {
-                        crate::config::add_excludes(&mut self.cfg.excludes, &self.new_exclude);
-                        self.new_exclude.clear();
-                    }
-                    if ui.button(format!("Übliche Ausschlüsse ({})", crate::config::SYSTEM_NAME)).clicked() {
-                        crate::config::add_excludes(&mut self.cfg.excludes, &crate::config::common_excludes().join("\n"));
-                    }
-                });
-                ui.separator();
-                ui.checkbox(&mut self.cfg.exclude_caches, "Ordner mit CACHEDIR.TAG ausschließen");
-                #[cfg(unix)]
-                ui.checkbox(&mut self.cfg.one_file_system, "Nicht in andere Laufwerke und Netzfreigaben wechseln")
-                    .on_hover_text("Gemountete Laufwerke, USB-Platten und Netzfreigaben unterhalb eines gewählten Ordners werden nicht mitgesichert. Gewählte Ordner selbst werden immer gesichert.");
-                ui.checkbox(&mut self.cfg.no_scan, "Schneller sichern: Dateien nicht vorab zählen (keine Prozentanzeige)");
-                ui.horizontal(|ui| {
-                    ui.label("Dateien größer als");
-                    ui.add(egui::TextEdit::singleline(&mut self.cfg.exclude_larger_than).hint_text("z. B. 500M").desired_width(90.0));
-                    ui::hint(ui, "leer = kein Limit");
-                });
-                ui.separator();
-                ui.label("Ordner mit Markerdatei ausschließen");
-                removable_list(ui, &mut self.cfg.exclude_if_present);
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.new_marker).hint_text(".nobackup").desired_width(220.0));
-                    if ui.button("Marker hinzufügen").clicked() && !self.new_marker.trim().is_empty() {
-                        self.cfg.exclude_if_present.push(self.new_marker.trim().to_string());
-                        self.new_marker.clear();
-                    }
-                });
-            });
-
-            ui::card(ui, Some("Aufbewahrung"), |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Täglich");
-                    ui.add(egui::DragValue::new(&mut self.cfg.keep_daily).range(0..=999));
-                    ui.label("Wöchentlich");
-                    ui.add(egui::DragValue::new(&mut self.cfg.keep_weekly).range(0..=999));
-                    ui.label("Monatlich");
-                    ui.add(egui::DragValue::new(&mut self.cfg.keep_monthly).range(0..=999));
-                });
-                ui::hint(ui, "So viele Snapshots pro Zeitraum bleiben erhalten, ältere werden nach jedem Backup entfernt.");
-            });
-
-            ui::card(ui, Some("Integritätsprüfung"), |ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Alle");
-                    ui.add(egui::DragValue::new(&mut self.cfg.check_interval_days).range(0..=365));
-                    ui.label("Tage");
-                    ui.label("Anteil der Daten");
-                    ui.add(egui::DragValue::new(&mut self.cfg.check_subset_percent).range(1..=100).suffix(" %"));
-                });
-                ui::hint(ui, "Der Zeitplan-Lauf prüft nach dem Backup einen Teil der Repository-Daten (0 Tage = aus). Ein Fehler wird als Warnung gemeldet.");
-            });
-            });
-        });
-    }
-
-    fn save(&mut self) -> anyhow::Result<()> {
-        self.cfg.validate()?;
-        self.cfg.save()?;
-        if !self.smb_pw.is_empty() {
-            secrets::set(Secret::Smb, &self.smb_pw)?;
-            self.smb_pw.clear();
-        }
-        if !self.repo_pw.is_empty() {
-            secrets::set(Secret::Repo, &self.repo_pw)?;
-            self.repo_pw.clear();
-        }
-        Ok(())
-    }
-
-    fn about_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Info");
-        ui.add_space(4.0);
-        ui::card(ui, Some("restic Backup"), |ui| {
-            ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
-            ui.horizontal(|ui| {
-                if ui.button("Nach Updates suchen").clicked() {
-                    let ctx = ui.ctx().clone();
-                    self.check_update(&ctx, true);
-                }
-                if ui.add(ui::primary("Neue Versionen ansehen")).clicked() {
-                    update::open_url(update::RELEASES_URL);
-                }
-            });
-            ui::status(ui, &self.update_msg);
-            ui.checkbox(&mut self.cfg.notify_success, "Auch nach erfolgreichem Backup eine Desktop-Meldung senden");
-            ui.checkbox(&mut self.cfg.close_to_tray, "Fenster schließen (X) = im Hintergrund weiterlaufen (aus: App beenden)");
-            if !self.has_tray() {
-                ui::hint(ui, "Kein Tray-Icon verfügbar: Das Fenster kommt zurück, wenn die App erneut gestartet wird.");
-            }
-            ui.checkbox(&mut self.cfg.check_updates, "Beim Start täglich nach einer neuen Version suchen");
-            ui::hint_long(ui, "hint_update", "Die Suche fragt nur die öffentliche GitHub-Release-Seite ab und sendet keine Daten.", "Update: neues Setup (Windows) bzw. .deb/AppImage (Linux) installieren – Einstellungen und Passwörter bleiben erhalten. Danach den Zeitplan einmal neu aktivieren. Die Option wird mit „Speichern“ (Einstellungen) übernommen.");
-        });
-        ui::card(ui, Some("Konfiguration"), |ui| {
-            ui::hint(ui, "Einstellungen als Datei sichern oder auf einen anderen Rechner übernehmen. Passwörter sind nicht enthalten.");
-            ui.horizontal(|ui| {
-                if ui.add_enabled(!self.busy, egui::Button::new("Exportieren …")).clicked() {
-                    if let Some(p) = rfd::FileDialog::new().set_file_name("restic-backup-einstellungen.toml").add_filter("TOML", &["toml"]).save_file() {
-                        self.status = match self.cfg.export_to(&p) {
-                            Ok(()) => format!("Exportiert nach {}.", p.display()),
-                            Err(e) => format!("FEHLER: {e:#}"),
-                        };
-                    }
-                }
-                if ui.add_enabled(!self.busy, egui::Button::new("Importieren …")).clicked() {
-                    if let Some(p) = rfd::FileDialog::new().add_filter("TOML", &["toml"]).pick_file() {
-                        self.status = match Config::import_from(&p) {
-                            Ok(c) => {
-                                self.cfg = c;
-                                "Importiert, aber noch nicht gespeichert. Unter „Einstellungen“ speichern und die Passwörter neu eintragen.".into()
-                            }
-                            Err(e) => format!("FEHLER: {e:#}"),
-                        };
-                    }
-                }
-            });
-            ui::status(ui, &self.status);
-        });
-        ui::card(ui, Some("Dateien"), |ui| {
-            if let Ok(p) = crate::config::config_path() {
-                ui.label(RichText::new(format!("Konfiguration: {}", p.display())).monospace().size(12.5));
-            }
-            if let Ok(p) = crate::config::last_run_path() {
-                ui.label(RichText::new(format!("Letztes Protokoll: {}", p.display())).monospace().size(12.5));
-            }
-        });
-    }
-
-    fn schedule_tab(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Zeitplan");
-        ui.add_space(4.0);
-        if self.busy {
-            ui::hint(ui, "Gesperrt, solange ein Lauf aktiv ist.");
-        }
-        let locked = self.busy;
-        egui::ScrollArea::vertical().id_salt("schedule_scroll").auto_shrink(false).show(ui, |ui| {
-            ui.add_enabled_ui(!locked, |ui| {
-            ui::card(ui, Some("Wann soll gesichert werden?"), |ui| {
-                ui.label("Schnellauswahl");
-                ui.horizontal_wrapped(|ui| {
-                    for (name, times) in [
-                        ("1× täglich", &["02:00"][..]),
-                        ("2× täglich", &["08:00", "20:00"]),
-                        ("Alle 6 Stunden", &["00:00", "06:00", "12:00", "18:00"]),
-                        ("Alle 3 Stunden", &["00:00", "03:00", "06:00", "09:00", "12:00", "15:00", "18:00", "21:00"]),
-                        ("Stündlich", &["00:00", "01:00", "02:00", "03:00", "04:00", "05:00", "06:00", "07:00", "08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00", "20:00", "21:00", "22:00", "23:00"]),
-                    ] {
-                        if ui.button(name).clicked() {
-                            self.cfg.schedule_times = times.iter().map(|t| t.to_string()).collect();
-                        }
-                    }
-                });
-                ui.separator();
-                ui.label("Uhrzeiten");
-                let mut del = None;
-                ui.horizontal_wrapped(|ui| {
-                    for (i, t) in self.cfg.schedule_times.iter().enumerate() {
-                        if ui.button(format!("{t}  ✖")).on_hover_text("Entfernen").clicked() {
-                            del = Some(i);
-                        }
-                    }
-                });
-                if let Some(i) = del {
-                    self.cfg.schedule_times.remove(i);
-                }
-                ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.new_time).hint_text("HH:MM").desired_width(80.0));
-                    if ui.button("＋ Uhrzeit hinzufügen").clicked() {
-                        match schedule::parse_time(self.new_time.trim()) {
-                            Ok((h, m)) => {
-                                let t = format!("{h:02}:{m:02}");
-                                if !self.cfg.schedule_times.contains(&t) {
-                                    self.cfg.schedule_times.push(t);
-                                    self.cfg.schedule_times.sort();
-                                }
-                                self.status.clear();
-                            }
-                            Err(_) => self.status = "FEHLER: Uhrzeit bitte als HH:MM angeben (z. B. 14:30).".into(),
-                        }
-                    }
-                });
-                ui.separator();
-                ui.label("Wochentage");
-                ui.horizontal(|ui| {
-                    for (i, d) in ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"].iter().enumerate() {
-                        ui.toggle_value(&mut self.cfg.schedule_days[i], *d);
-                    }
-                });
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if ui.add(ui::primary("Zeitplan aktivieren")).clicked() {
-                        self.status = match self.cfg.validate().and_then(|_| self.cfg.save()).and_then(|_| schedule::install(&self.cfg.schedule_times, &self.cfg.schedule_days, self.sched_opts())) {
-                            Ok(()) => format!("Zeitplan aktiv: {}.", self.schedule_summary()),
-                            Err(e) => format!("FEHLER: {e:#}"),
-                        };
-                        // Ohne fstab-Eintrag kann ein geplanter Lauf die Freigabe nicht einbinden (kein pkexec-Dialog)
-                        #[cfg(unix)]
-                        if !self.status.starts_with("FEHLER") && !smb::scheduled_mount_ready() {
-                            self.status = "Warnung: Zeitplan aktiv, aber der fstab-Eintrag fehlt. Geplante Läufe können die Freigabe so nicht einbinden – siehe „Automatisches Einbinden (Linux)“ unten.".into();
-                        }
-                        self.load_schedule_status(ui.ctx());
-                    }
-                    if ui.button("Zeitplan entfernen").clicked() {
-                        self.status = match schedule::remove() {
-                            Ok(()) => "Zeitplan entfernt.".into(),
-                            Err(e) => format!("FEHLER: {e:#}"),
-                        };
-                        self.load_schedule_status(ui.ctx());
-                    }
-                });
-                ui::status(ui, &self.status);
-                ui::hint_long(
-                    ui,
-                    "hint_catchup",
-                    "Änderungen gelten erst nach „Zeitplan aktivieren“. Verpasste Läufe werden nachgeholt.",
-                    "Der Zeitplan startet das Programm zu den Uhrzeiten, bei der Anmeldung, beim Entsperren und alle 10 Minuten (Windows zusätzlich beim Aufwachen und sobald ein Netzwerk verbunden ist); gesichert wird nur, wenn seit dem letzten geplanten Termin noch kein Backup gelang. War der Rechner aus, wird also einmal nachgeholt (auch nach Tagen). Ist das NAS nicht erreichbar (z. B. unterwegs), wird der Lauf übersprungen und später erneut versucht – ohne Fehler im Verlauf. Schlägt ein Lauf fehl, versucht es der Zeitplan nach 5 Minuten erneut, danach nach 15 Minuten, einer Stunde und dann alle zwei Stunden; eine Desktop-Meldung kommt erst beim zweiten Fehlschlag in Folge. Ein abgebrochenes Backup zählt nicht als Fehlschlag. Nach einer Programm-Aktualisierung wird der Zeitplan beim Start der App automatisch erneuert.",
-                );
-                #[cfg(windows)]
-                ui::hint(ui, "Der Taskplaner-Task läuft unter deinem Benutzer und nutzt die Freigabe direkt per UNC-Pfad.");
-            });
-            ui::card(ui, Some("Diagnose"), |ui| {
-                let now = chrono::Local::now().naive_local();
-                egui::Grid::new("sched_diag").num_columns(2).spacing([18.0, 6.0]).show(ui, |ui| {
-                    ui.label("Zeitplan im System");
-                    match &self.sched_status {
-                        None => ui.label(RichText::new("wird abgefragt …").color(MUTED)),
-                        Some(s) if !s.installed => ui.label(RichText::new("nicht eingerichtet").color(WARN)),
-                        Some(s) if !s.active => ui.label(RichText::new("eingerichtet, aber deaktiviert").color(ERR)),
-                        Some(_) => ui.label(RichText::new("aktiv").color(OK)),
-                    };
-                    ui.end_row();
-                    if let Some(s) = self.sched_status.as_ref().filter(|s| s.installed) {
-                        if let Some(exe) = &s.exe {
-                            ui.label("Programmdatei");
-                            if s.exe_exists {
-                                ui.label(RichText::new(exe).color(MUTED));
-                            } else {
-                                ui.label(RichText::new(format!("{exe} – fehlt! „Zeitplan aktivieren“ richtet ihn neu ein.")).color(ERR));
-                            }
-                            ui.end_row();
-                        }
-                        ui.label("Letzter Start");
-                        ui.label(match (&s.last_run, &s.result) {
-                            (Some(t), Some(r)) => format!("{t} ({r})"),
-                            (Some(t), None) => t.clone(),
-                            (None, Some(r)) => r.clone(),
-                            (None, None) => "noch keiner".into(),
-                        });
-                        ui.end_row();
-                    }
-                    ui.label("Letztes Backup");
-                    ui.label(self.sched_last_success.map_or("noch keins".to_string(), |t| t.format("%d.%m.%Y %H:%M").to_string()));
-                    ui.end_row();
-                    ui.label("Nächster Termin");
-                    ui.label(match schedule::next_slot(now, &self.cfg.schedule_times, &self.cfg.schedule_days) {
-                        Ok(Some(t)) => t.format("%d.%m.%Y %H:%M").to_string(),
-                        _ => "keiner (Uhrzeit oder Wochentag fehlt)".into(),
-                    });
-                    ui.end_row();
-                    if let Some((count, failed)) = self.sched_failures {
-                        let next = failed + chrono::Duration::minutes(crate::scheduled::retry_delay_minutes(count));
-                        ui.label("Fehlversuche");
-                        ui.label(RichText::new(format!("{count} in Folge, zuletzt {} – nächster Versuch ab {}", failed.format("%d.%m. %H:%M"), next.format("%H:%M"))).color(WARN));
-                        ui.end_row();
-                    }
-                    if !self.sched_mount_ready {
-                        ui.label("Einbinden");
-                        ui.label(RichText::new("fstab-Eintrag fehlt – geplante Läufe können die Freigabe nicht einbinden").color(ERR));
-                        ui.end_row();
-                    }
-                });
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Zeitplan prüfen").on_hover_text("Zeigt, was ein Zeitplan-Lauf jetzt täte. Startet kein Backup.").clicked() {
-                        self.check_schedule(ui.ctx());
-                    }
-                    if ui.button("Aktualisieren").clicked() {
-                        self.load_schedule_status(ui.ctx());
-                    }
-                });
-                ui::status(ui, &self.sched_check);
-                ui.separator();
-                ui.label(RichText::new("Letzte Entscheidungen des Zeitplans").color(MUTED).size(13.0));
-                if self.sched_log.is_empty() {
-                    ui::hint(ui, "Noch keine Einträge.");
-                }
-                for (time, msg) in &self.sched_log {
-                    // Zeitstempel „JJJJ-MM-TT HH:MM:SS“ kürzen auf „TT.MM. HH:MM“
-                    let short = chrono::NaiveDateTime::parse_from_str(time, "%Y-%m-%d %H:%M:%S").map_or(time.clone(), |t| t.format("%d.%m. %H:%M").to_string());
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new(short).monospace().color(MUTED).size(13.0));
-                        ui.label(RichText::new(msg).size(13.0));
-                    });
-                }
-            });
-            ui::card(ui, Some("Laptop und Pause"), |ui| {
-                ui.checkbox(&mut self.cfg.only_on_ac, "Nur am Netzteil sichern");
-                #[cfg(windows)]
-                ui.checkbox(&mut self.cfg.wake_to_run, "Rechner zu den Uhrzeiten aus dem Standby wecken").on_hover_text("Windows weckt den Rechner nur, wenn in den Energieoptionen „Zeitgeber zur Aktivierung zulassen“ eingeschaltet ist.");
-                ui.horizontal(|ui| {
-                    ui.label("Warnen nach");
-                    ui.add(egui::DragValue::new(&mut self.cfg.warn_after_days).range(0..=60).suffix(" Tagen"));
-                    ui.label("ohne Backup (0 = aus)");
-                });
-                ui::hint(ui, "Gilt nach „Zeitplan aktivieren“ bzw. „Speichern“. Die Warnung erscheint als Desktop-Meldung, höchstens einmal täglich.");
-                ui.separator();
-                match self.active_pause() {
-                    Some(until) => {
-                        ui.label(RichText::new(format!("Zeitplan pausiert bis {}", until.format("%d.%m.%Y %H:%M"))).color(WARN));
-                    }
-                    None => {
-                        ui.label("Der Zeitplan ist aktiv.");
-                    }
-                }
-                ui.horizontal(|ui| {
-                    let now = chrono::Local::now().naive_local();
-                    if ui.button("Bis morgen früh pausieren").clicked() {
-                        self.set_pause(Some(ui::tomorrow_morning(now)));
-                    }
-                    if ui.button("1 Woche pausieren").clicked() {
-                        self.set_pause(Some(now + chrono::Duration::days(7)));
-                    }
-                    if ui.add_enabled(self.active_pause().is_some(), egui::Button::new("Fortsetzen")).clicked() {
-                        self.set_pause(None);
-                    }
-                });
-            });
-            ui::card(ui, Some("Autostart"), |ui| {
-                if ui.checkbox(&mut self.autostart, "Programm beim Anmelden automatisch starten (minimiert)").changed() {
-                    self.status = match crate::autostart::set(self.autostart) {
-                        Ok(()) if self.autostart => "Autostart eingerichtet.".into(),
-                        Ok(()) => "Autostart entfernt.".into(),
-                        Err(e) => {
-                            self.autostart = crate::autostart::is_enabled();
-                            format!("FEHLER: {e:#}")
-                        }
-                    };
-                }
-                ui::hint(ui, "Der Zeitplan läuft unabhängig vom Autostart.");
-                #[cfg(unix)]
-                ui::hint_long(ui, "hint_linger", "Linux: Der Timer läuft nur bei angemeldetem Benutzer.", "Für Backups auch ohne Anmeldung: sudo loginctl enable-linger $USER");
-            });
-            #[cfg(unix)]
-            ui::card(ui, Some("Automatisches Einbinden (Linux)"), |ui| {
-                ui::hint_long(ui, "hint_fstab", "Geplante Läufe brauchen einen fstab-Eintrag (als root).", "Geplante Läufe können keinen pkexec-Dialog bestätigen. Trage diese Zeile in /etc/fstab ein (als root); danach mountet die App ohne Rückfrage:");
-                let mut line = smb::fstab_line(&self.cfg).unwrap_or_default();
-                ui.add(egui::TextEdit::multiline(&mut line).code_editor().desired_rows(3).desired_width(f32::INFINITY));
-                if ui.button("Credentials-Datei anlegen (SMB-Passwort aus Keyring)").clicked() {
-                    self.status = match secrets::get(Secret::Smb).and_then(|p| p.ok_or_else(|| anyhow::anyhow!("Kein SMB-Passwort gespeichert"))).and_then(|p| smb::write_credentials(&self.cfg, &p)) {
-                        Ok(()) => "Credentials-Datei (0600) angelegt.".into(),
-                        Err(e) => format!("FEHLER: {e:#}"),
-                    };
-                }
-            });
-            });
-        });
-    }
-
     fn sidebar(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         egui::Panel::left("nav")
@@ -1529,6 +663,10 @@ impl eframe::App for App {
         } else {
             // Einen Zeitplan-Lauf bemerken, auch wenn das Fenster still steht oder versteckt ist
             ctx.request_repaint_after(std::time::Duration::from_secs(if self.external_run.is_some() { 1 } else { 3 }));
+        }
+        if self.pending_sched_status {
+            self.pending_sched_status = false;
+            self.load_schedule_status(ctx);
         }
         if self.pending_overview && !self.busy {
             self.pending_overview = false;

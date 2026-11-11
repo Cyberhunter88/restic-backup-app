@@ -28,7 +28,8 @@ pub fn host_reachable(host: &str) -> bool {
     addrs.into_iter().any(|a| std::net::TcpStream::connect_timeout(&a, std::time::Duration::from_secs(3)).is_ok())
 }
 
-/// Freier Platz (Bytes) auf dem Datenträger des Repo-Pfads; unter Windows (UNC) nicht ermittelbar.
+/// Freier Platz (Bytes) auf dem Datenträger des Repo-Pfads (Linux: `df`, Windows: `GetDiskFreeSpaceExW`,
+/// das auch UNC-Pfade versteht).
 pub fn free_space(path: &str) -> Option<u64> {
     #[cfg(unix)]
     {
@@ -37,8 +38,22 @@ pub fn free_space(path: &str) -> Option<u64> {
     }
     #[cfg(windows)]
     {
-        let _ = path;
-        None
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetDiskFreeSpaceExW(dir: *const u16, free_for_caller: *mut u64, total: *mut u64, total_free: *mut u64) -> i32;
+        }
+        // Ein UNC-Pfad muss mit einem Backslash enden
+        let mut dir = path.to_string();
+        if !dir.ends_with('\\') {
+            dir.push('\\');
+        }
+        let wide: Vec<u16> = std::ffi::OsStr::new(&dir).encode_wide().chain(std::iter::once(0)).collect();
+        let mut free = 0u64;
+        // SAFETY: `wide` ist nullterminiert und lebt über den Aufruf hinaus; `free` ist ein gültiges Ziel,
+        // die beiden anderen Ausgaben sind laut API optional (null).
+        let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, std::ptr::null_mut(), std::ptr::null_mut()) };
+        (ok != 0).then_some(free)
     }
 }
 
@@ -359,6 +374,13 @@ mod tests {
     fn mount_escape_wie_fstab() {
         assert_eq!(mount_escape("/home/a b/c\\d"), "/home/a\\040b/c\\134d");
         assert_eq!(mount_escape("/ohne"), "/ohne");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn free_space_windows() {
+        assert!(free_space(&std::env::temp_dir().to_string_lossy()).is_some_and(|f| f > 0));
+        assert_eq!(free_space(r"C:\gibt-es-nicht-restic-backup-app-test"), None);
     }
 
     #[cfg(windows)]

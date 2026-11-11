@@ -2,6 +2,26 @@
 
 ## [Unveröffentlicht]
 
+## [0.3.29]
+
+### Behoben
+- Ältere restic-Versionen (vor 0.15, z. B. 0.14 aus Debian 12): Das Backup scheiterte mit „unknown flag“, weil `--read-concurrency` und `--no-scan` immer übergeben wurden. Beide Schalter werden jetzt nur noch gesetzt, wenn die installierte restic-Version sie kennt.
+- Unter „Frühere Läufe“ stand bei einem abgebrochenen Backup „Fehler“ statt „Abgebrochen“.
+- Verlauf, Protokoll des letzten Laufs und Ergebnis der Repository-Prüfung werden wie die übrigen Zustandsdateien erst vollständig geschrieben und dann umbenannt. Ein Absturz oder Stromausfall mitten im Schreiben hinterlässt keine halbe Datei mehr.
+
+### Neu
+- Wiederherstellung, „Repository prüfen“ und die Dateisuche lassen sich abbrechen (Snapshots-Tab, „Abbrechen“ neben der Statusmeldung). Die Wiederherstellung zeigt mit restic ab 0.17 einen Fortschrittsbalken.
+- Wiederherstellen am Originalort (Snapshots-Tab, „Am Originalort wiederherstellen“): schreibt eine Datei, einen Ordner oder den ganzen Snapshot dorthin zurück, wo gesichert wurde. Vor dem Start wird nachgefragt. Braucht restic 0.17 oder neuer; unter Windows nur für Pfade mit Laufwerksbuchstaben.
+- Wiederherstellung: Auswahl, was mit vorhandenen Dateien geschieht (überschreiben, nur geänderte ersetzen, nicht anfassen; wirkt ab restic 0.17), und Option „Danach prüfen“ (`restic restore --verify`).
+- Warnung bei wenig freiem Platz auf dem NAS: Nach dem Backup wird der freie Platz gemessen; liegt er unter der Schwelle (Einstellungen → Repository, Standard 20 GB, 0 = aus), endet der Lauf mit einer Warnung samt Desktop-Meldung. Die Repository-Karte hebt den Wert dann hervor.
+- Windows: Die Repository-Karte zeigt jetzt auch den freien Platz auf dem NAS (bisher nur unter Linux).
+
+### Geändert
+- „Zeitplan aktivieren“ und „Zeitplan entfernen“ laufen im Hintergrund; das Fenster friert dabei nicht mehr kurz ein.
+- Kleinere Programmdatei und etwas schnellerer Start (Release-Build mit Thin-LTO und ohne Debug-Symbole).
+- Die Snapshot-Liste filtert einmal je Bild statt zweimal je Snapshot (flüssiger bei vielen Snapshots).
+- Intern: Die Oberfläche ist je Tab in ein eigenes Modul aufgeteilt (`src/app/`), die Wiederherstellungs-Logik liegt in `src/restore.rs`, der Build-Workflow hat nur noch Leserechte.
+
 ## [0.3.28]
 
 ### Behoben
