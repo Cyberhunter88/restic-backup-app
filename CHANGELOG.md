@@ -2,6 +2,9 @@
 
 ## [Unveröffentlicht]
 
+### Geändert
+- Intern: Die Workflows belegen weniger Actions-Speicher. Pakete aus Pull Requests bleiben nur noch 3 Tage, ein erfolgreicher main-Build löscht die Pakete älterer main-Builds, der Release-Workflow löscht die Artefakte nach dem Veröffentlichen (die Pakete liegen dann am Release), und den Rust-Cache legt nur noch main an.
+
 ## [0.4.1]
 
 ### Behoben

@@ -6,6 +6,11 @@ name: build
 #   „Anwendung prüfen“ verlangt
 # - main wird nach dem Merge einmal gebaut; die Pakete bleiben 90 Tage als Artefakte erhalten
 #   und werden vom Workflow „release“ unverändert veröffentlicht (kein Neubau, kein Release hier)
+# Actions-Speicher sparen:
+# - Pakete aus Pull Requests bleiben nur 3 Tage (nur zum Ausprobieren, der Release nutzt sie nie)
+# - nach einem erfolgreichen main-Build werden die Pakete älterer main-Builds gelöscht
+#   (der Release-Workflow nimmt ohnehin nur den Build des aktuellen main-Commits)
+# - den Rust-Cache speichert nur main; Pull Requests lesen ihn nur
 # - reine Doku-Änderungen auf main lösen keinen Build aus
 on:
   push:
@@ -39,6 +44,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Nur main legt Caches an (Pull Requests nutzen sie mit), sonst speichert jeder PR
+          # eigene Kopien von target/ für Linux und Windows
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Version aus Cargo.toml
         id: ver
@@ -107,7 +116,32 @@ jobs:
           name: restic-backup-app-${{ matrix.target }}
           path: dist/*
           if-no-files-found: error
-          retention-days: 90
+          # PR-Pakete braucht der Release nie: kurz halten
+          retention-days: ${{ github.event_name == 'pull_request' && 3 || 90 }}
+
+  # Pakete älterer main-Builds löschen: nur der Build des aktuellen main-Commits wird
+  # veröffentlicht, ältere Stände belegen sonst bis zu 90 Tage Actions-Speicher
+  aufraeumen:
+    name: Alte Pakete löschen
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Artefakte älterer main-Builds löschen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ids=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+            --jq ".artifacts[] | select(.expired | not) | select(.workflow_run.head_branch == \"main\") | select(.workflow_run.id != $GITHUB_RUN_ID) | .id")
+          n=0
+          for id in $ids; do
+            if gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"; then n=$((n + 1)); else echo "::warning::Artefakt $id nicht löschbar"; fi
+          done
+          echo "Gelöschte Artefakte älterer main-Builds: $n" >> "$GITHUB_STEP_SUMMARY"
 
   # Stabiler Name: main verlangt genau diese Prüfung (wie bei den anderen Projekten)
   pruefen:

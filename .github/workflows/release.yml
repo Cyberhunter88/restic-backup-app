@@ -92,7 +92,8 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
-      actions: read
+      # write: die veröffentlichten Pakete danach aus dem Actions-Speicher löschen
+      actions: write
     env:
       GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.prepare.outputs.version }}
@@ -142,3 +143,12 @@ jobs:
           if [ -z "$highest" ] || [ "$(printf '%s\n%s\n' "$highest" "$VERSION" | sort -V | tail -1)" = "$VERSION" ]; then latest=true; else latest=false; fi
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$latest"
           echo "## Veröffentlicht: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG" >> "$GITHUB_STEP_SUMMARY"
+      - name: Artefakte des Builds löschen (liegen jetzt am Release)
+        # Ein Fehler hier macht das Release nicht ungültig
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          for id in $(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" --jq '.artifacts[].id'); do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"
+          done
+          echo "Artefakte von Build-Lauf $RUN_ID gelöscht (die Pakete liegen am Release)." >> "$GITHUB_STEP_SUMMARY"
