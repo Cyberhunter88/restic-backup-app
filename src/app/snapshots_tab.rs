@@ -24,7 +24,7 @@ impl App {
                     });
                     self.cancellable = true;
                 }
-                let all = self.unlock_all;
+                let all = self.snap.unlock_all;
                 if ui
                     .add_enabled(!self.busy, egui::Button::new("🔓  Sperren entfernen"))
                     .on_hover_text(if all { "restic unlock --remove-all" } else { "restic unlock (nur veraltete Sperren)" })
@@ -37,7 +37,7 @@ impl App {
                         let _ = tx.send(Msg::Info(r.map_err(|e| format!("{e:#}"))));
                     });
                 }
-                ui.checkbox(&mut self.unlock_all, "auch aktive")
+                ui.checkbox(&mut self.snap.unlock_all, "auch aktive")
                     .on_hover_text("Entfernt ALLE Sperren, auch die eines gerade laufenden Backups (z. B. von einem anderen Rechner). Nur nutzen, wenn sicher nichts läuft.");
                 ui::status(ui, &self.status);
                 // Wiederherstellung, Prüfung und Suche lassen sich abbrechen
@@ -50,41 +50,41 @@ impl App {
                     }
                 }
             });
-            ui.add_enabled_ui(!self.restore_in_place, |ui| {
+            ui.add_enabled_ui(!self.snap.restore_in_place, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Wiederherstellen nach:");
-                    ui.add(egui::TextEdit::singleline(&mut self.restore_target).desired_width(ui.available_width() - 110.0).hint_text("Zielordner wählen"));
+                    ui.add(egui::TextEdit::singleline(&mut self.snap.restore_target).desired_width(ui.available_width() - 110.0).hint_text("Zielordner wählen"));
                     if ui.button("Wählen …").clicked() && let Some(p) = rfd::FileDialog::new().pick_folder() {
-                        self.restore_target = p.to_string_lossy().into_owned();
+                        self.snap.restore_target = p.to_string_lossy().into_owned();
                     }
                 });
             });
             ui.horizontal_wrapped(|ui| {
-                ui.checkbox(&mut self.restore_in_place, "Am Originalort wiederherstellen").on_hover_text("Schreibt die Dateien dorthin zurück, wo sie gesichert wurden (braucht restic 0.17 oder neuer). Vor dem Start wird nachgefragt.");
+                ui.checkbox(&mut self.snap.restore_in_place, "Am Originalort wiederherstellen").on_hover_text("Schreibt die Dateien dorthin zurück, wo sie gesichert wurden (braucht restic 0.17 oder neuer). Vor dem Start wird nachgefragt.");
                 ui.label("Vorhandene Dateien");
-                egui::ComboBox::from_id_salt("restore_overwrite").selected_text(self.restore_overwrite.label()).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt("restore_overwrite").selected_text(self.snap.restore_overwrite.label()).show_ui(ui, |ui| {
                     for o in crate::restore::Overwrite::ALL {
-                        ui.selectable_value(&mut self.restore_overwrite, o, o.label());
+                        ui.selectable_value(&mut self.snap.restore_overwrite, o, o.label());
                     }
                 });
-                ui.checkbox(&mut self.restore_verify, "Danach prüfen").on_hover_text("Liest die wiederhergestellten Dateien noch einmal und vergleicht sie mit dem Snapshot (restic restore --verify).");
+                ui.checkbox(&mut self.snap.restore_verify, "Danach prüfen").on_hover_text("Liest die wiederhergestellten Dateien noch einmal und vergleicht sie mit dem Snapshot (restic restore --verify).");
             });
             ui::hint(ui, "Die Wahl für vorhandene Dateien wirkt ab restic 0.17; ältere Versionen überschreiben immer.");
             // Sicherheitsabfrage vor dem Zurückschreiben an den Originalort
-            if let Some((_, include)) = self.confirm_restore.clone() {
+            if let Some((_, include)) = self.snap.confirm_restore.clone() {
                 ui.separator();
                 let what = include.unwrap_or_else(|| "den ganzen Snapshot".into());
-                ui.label(RichText::new(format!("{what} wirklich an den Originalort zurückschreiben? Vorhandene Dateien: {}.", self.restore_overwrite.label())).color(WARN));
+                ui.label(RichText::new(format!("{what} wirklich an den Originalort zurückschreiben? Vorhandene Dateien: {}.", self.snap.restore_overwrite.label())).color(WARN));
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(!self.busy, egui::Button::new("Ja, wiederherstellen")).clicked() && let Some((id, include)) = self.confirm_restore.take() {
+                    if ui.add_enabled(!self.busy, egui::Button::new("Ja, wiederherstellen")).clicked() && let Some((id, include)) = self.snap.confirm_restore.take() {
                         self.restore(&ctx, id, include);
                     }
                     if ui.button("Nicht wiederherstellen").clicked() {
-                        self.confirm_restore = None;
+                        self.snap.confirm_restore = None;
                     }
                 });
             }
-            if let Some(path) = self.restored_to.clone() && ui.link(format!("📂 {path} im Dateimanager öffnen")).clicked() {
+            if let Some(path) = self.snap.restored_to.clone() && ui.link(format!("📂 {path} im Dateimanager öffnen")).clicked() {
                 update::open_url(&path);
             }
         });
@@ -92,27 +92,27 @@ impl App {
         let busy = self.busy;
         let mut to_select = None;
         let now = chrono::Local::now();
-        let mut folders: Vec<String> = self.snapshots.iter().flat_map(|s| s.paths.iter().cloned()).collect();
+        let mut folders: Vec<String> = self.snap.snapshots.iter().flat_map(|s| s.paths.iter().cloned()).collect();
         folders.sort();
         folders.dedup();
-        if self.snap_folder.as_ref().is_some_and(|f| !folders.contains(f)) {
-            self.snap_folder = None;
+        if self.snap.folder.as_ref().is_some_and(|f| !folders.contains(f)) {
+            self.snap.folder = None;
         }
         // Einmal je Frame filtern (statt je Snapshot zweimal: für die Anzahl und für die Liste)
-        let visible: Vec<usize> = (0..self.snapshots.len()).filter(|&i| ui::snapshot_matches(&self.snapshots[i], &self.snap_filter, self.snap_folder.as_deref(), self.snap_range, now)).collect();
+        let visible: Vec<usize> = (0..self.snap.snapshots.len()).filter(|&i| ui::snapshot_matches(&self.snap.snapshots[i], &self.snap.filter, self.snap.folder.as_deref(), self.snap.range, now)).collect();
         let shown = visible.len();
-        let title = if shown == self.snapshots.len() { format!("Sicherungen ({shown})") } else { format!("Sicherungen ({shown} von {})", self.snapshots.len()) };
+        let title = if shown == self.snap.snapshots.len() { format!("Sicherungen ({shown})") } else { format!("Sicherungen ({shown} von {})", self.snap.snapshots.len()) };
         ui::card(ui, Some(&title), |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut self.snap_filter).hint_text("🔍 Datum, Rechner oder Pfad").desired_width(220.0));
-                egui::ComboBox::from_id_salt("snap_folder").selected_text(self.snap_folder.clone().unwrap_or_else(|| "Alle Ordner".into())).width(220.0).show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.snap_folder, None, "Alle Ordner");
+                ui.add(egui::TextEdit::singleline(&mut self.snap.filter).hint_text("🔍 Datum, Rechner oder Pfad").desired_width(220.0));
+                egui::ComboBox::from_id_salt("snap_folder").selected_text(self.snap.folder.clone().unwrap_or_else(|| "Alle Ordner".into())).width(220.0).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.snap.folder, None, "Alle Ordner");
                     for f in &folders {
-                        ui.selectable_value(&mut self.snap_folder, Some(f.clone()), f);
+                        ui.selectable_value(&mut self.snap.folder, Some(f.clone()), f);
                     }
                 });
                 for (r, name) in ui::SnapRange::ALL {
-                    ui.selectable_value(&mut self.snap_range, r, name);
+                    ui.selectable_value(&mut self.snap.range, r, name);
                 }
             });
             egui::ScrollArea::vertical().id_salt("snaps").max_height(190.0).auto_shrink([false, true]).show(ui, |ui| {
@@ -122,10 +122,10 @@ impl App {
                             ui.label(RichText::new(h).color(MUTED).size(13.0));
                         }
                         ui.end_row();
-                        for s in visible.iter().map(|&i| &self.snapshots[i]) {
+                        for s in visible.iter().map(|&i| &self.snap.snapshots[i]) {
                             let when = ui::short_time(&s.time);
                             let paths = s.paths.join(", ");
-                            let sel = self.selected.as_deref() == Some(&s.id);
+                            let sel = self.snap.selected.as_deref() == Some(&s.id);
                             if ui.selectable_label(sel, RichText::new(&s.short_id).monospace()).clicked() {
                                 to_select = Some(s.id.clone());
                             }
@@ -137,20 +137,20 @@ impl App {
                     });
                 });
             });
-            if self.snapshots.is_empty() && !self.busy {
+            if self.snap.snapshots.is_empty() && !self.busy {
                 ui::hint(ui, "Keine Snapshots gefunden.");
             }
         });
         if let Some(id) = to_select {
-            self.selected = Some(id);
-            self.compare_with = None;
-            self.diff = None;
-            self.diff_msg.clear();
-            self.dir = "/".into();
-            self.found = None;
+            self.snap.selected = Some(id);
+            self.snap.compare_with = None;
+            self.snap.diff = None;
+            self.snap.diff_msg.clear();
+            self.snap.dir = "/".into();
+            self.snap.found = None;
             self.load_dir(&ctx);
         }
-        let Some(id) = self.selected.clone() else {
+        let Some(id) = self.snap.selected.clone() else {
             ui::hint(ui, "Wähle einen Snapshot, um seine Dateien zu durchsuchen.");
             return;
         };
@@ -159,15 +159,15 @@ impl App {
         let mut restore = None;
         let mut search = false;
         let mut clear_search = false;
-        let can_restore = !self.busy && (self.restore_in_place || !self.restore_target.is_empty());
+        let can_restore = !self.busy && (self.snap.restore_in_place || !self.snap.restore_target.is_empty());
         ui::card(ui, Some("Dateien im Snapshot"), |ui| {
             ui.horizontal(|ui| {
-                if ui.add_enabled(self.dir != "/" && !self.busy, egui::Button::new("↑")).on_hover_text("Eine Ebene hoch").clicked() {
-                    let parent = std::path::Path::new(&self.dir).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or("/".into());
-                    self.dir = if parent.is_empty() { "/".into() } else { parent };
+                if ui.add_enabled(self.snap.dir != "/" && !self.busy, egui::Button::new("↑")).on_hover_text("Eine Ebene hoch").clicked() {
+                    let parent = std::path::Path::new(&self.snap.dir).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or("/".into());
+                    self.snap.dir = if parent.is_empty() { "/".into() } else { parent };
                     self.load_dir(&ctx);
                 }
-                ui.label(RichText::new(&self.dir).monospace());
+                ui.label(RichText::new(&self.snap.dir).monospace());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.add_enabled(can_restore, egui::Button::new("Ganzen Snapshot wiederherstellen")).on_disabled_hover_text("Zuerst ein Ziel wählen").clicked() {
                         restore = Some((None::<String>, true));
@@ -175,20 +175,20 @@ impl App {
                 });
             });
             ui.horizontal(|ui| {
-                let r = ui.add(egui::TextEdit::singleline(&mut self.find_term).hint_text("🔍 Datei im Snapshot suchen (Name, * und ? möglich)").desired_width(340.0));
+                let r = ui.add(egui::TextEdit::singleline(&mut self.snap.find_term).hint_text("🔍 Datei im Snapshot suchen (Name, * und ? möglich)").desired_width(340.0));
                 let enter_pressed = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if (ui.add_enabled(!self.busy && !self.find_term.trim().is_empty(), egui::Button::new("Suchen")).clicked() || enter_pressed) && !self.busy && !self.find_term.trim().is_empty() {
+                if (ui.add_enabled(!self.busy && !self.snap.find_term.trim().is_empty(), egui::Button::new("Suchen")).clicked() || enter_pressed) && !self.busy && !self.snap.find_term.trim().is_empty() {
                     search = true;
                 }
-                if self.found.is_some() && ui.button("✖ Suche beenden").clicked() {
+                if self.snap.found.is_some() && ui.button("✖ Suche beenden").clicked() {
                     clear_search = true;
                 }
             });
-            if let Some(f) = &self.found {
-                ui::hint(ui, &format!("{} Treffer für „{}“ – Pfade beginnen bei Windows mit dem Laufwerksbuchstaben.", f.len(), self.find_term.trim()));
+            if let Some(f) = &self.snap.found {
+                ui::hint(ui, &format!("{} Treffer für „{}“ – Pfade beginnen bei Windows mit dem Laufwerksbuchstaben.", f.len(), self.snap.find_term.trim()));
             }
-            let searching = self.found.is_some();
-            let list: &[Node] = self.found.as_deref().unwrap_or(&self.nodes);
+            let searching = self.snap.found.is_some();
+            let list: &[Node] = self.snap.found.as_deref().unwrap_or(&self.snap.nodes);
             egui::ScrollArea::vertical().id_salt("nodes").auto_shrink([false, false]).show(ui, |ui| {
                 egui::Grid::new("node_grid").num_columns(3).striped(true).min_col_width(90.0).show(ui, |ui| {
                     for n in list {
@@ -222,10 +222,10 @@ impl App {
             });
         });
         if clear_search {
-            self.found = None;
+            self.snap.found = None;
         }
         if search {
-            let (cfg, term, snap) = (self.cfg.clone(), self.find_term.clone(), id.clone());
+            let (cfg, term, snap) = (self.cfg.clone(), self.snap.find_term.clone(), id.clone());
             self.status = "Suche …".into();
             let cancel = self.cancel.clone();
             self.spawn(&ctx, move |tx| {
@@ -235,13 +235,13 @@ impl App {
             self.cancellable = true;
         }
         if let Some(d) = enter {
-            self.dir = d;
+            self.snap.dir = d;
             self.load_dir(&ctx);
         }
         if let Some((include, _)) = restore {
-            if self.restore_in_place {
+            if self.snap.restore_in_place {
                 // Erst nach der Sicherheitsabfrage (oben im Tab)
-                self.confirm_restore = Some((id.clone(), include));
+                self.snap.confirm_restore = Some((id.clone(), include));
             } else {
                 self.restore(&ctx, id.clone(), include);
             }
@@ -251,24 +251,24 @@ impl App {
 
     /// Vergleicht den gewählten Snapshot mit einem anderen (`restic diff`).
     fn diff_card(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, id: &str) {
-        let others: Vec<(String, String)> = self.snapshots.iter().filter(|s| s.id != id).map(|s| (s.id.clone(), format!("{}  {}", s.short_id, ui::short_time(&s.time)))).collect();
+        let others: Vec<(String, String)> = self.snap.snapshots.iter().filter(|s| s.id != id).map(|s| (s.id.clone(), format!("{}  {}", s.short_id, ui::short_time(&s.time)))).collect();
         let busy = self.busy;
         let mut run = false;
         ui::card(ui, Some("Änderungen gegenüber einem anderen Snapshot"), |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label("Vergleichen mit");
-                let shown = others.iter().find(|(i, _)| Some(i) == self.compare_with.as_ref()).map(|(_, l)| l.clone()).unwrap_or_else(|| "Snapshot wählen …".into());
+                let shown = others.iter().find(|(i, _)| Some(i) == self.snap.compare_with.as_ref()).map(|(_, l)| l.clone()).unwrap_or_else(|| "Snapshot wählen …".into());
                 egui::ComboBox::from_id_salt("compare_with").selected_text(shown).width(240.0).show_ui(ui, |ui| {
                     for (i, l) in &others {
-                        ui.selectable_value(&mut self.compare_with, Some(i.clone()), l);
+                        ui.selectable_value(&mut self.snap.compare_with, Some(i.clone()), l);
                     }
                 });
-                if ui.add_enabled(!busy && self.compare_with.is_some(), egui::Button::new("Vergleichen")).clicked() {
+                if ui.add_enabled(!busy && self.snap.compare_with.is_some(), egui::Button::new("Vergleichen")).clicked() {
                     run = true;
                 }
             });
-            ui::status(ui, &self.diff_msg);
-            if let Some(d) = &self.diff {
+            ui::status(ui, &self.snap.diff_msg);
+            if let Some(d) = &self.snap.diff {
                 const MAX: usize = 500;
                 let (add, del, chg) = (d.iter().filter(|e| e.modifier == "+").count(), d.iter().filter(|e| e.modifier == "-").count(), d.iter().filter(|e| e.modifier != "+" && e.modifier != "-").count());
                 ui.label(format!("{add} nur im gewählten Snapshot (+), {del} nur im anderen (−), {chg} geändert"));
@@ -290,10 +290,10 @@ impl App {
                 });
             }
         });
-        if run && let Some(other) = self.compare_with.clone() {
+        if run && let Some(other) = self.snap.compare_with.clone() {
             let (cfg, base) = (self.cfg.clone(), id.to_string());
-            self.diff = None;
-            self.diff_msg = "Vergleiche …".into();
+            self.snap.diff = None;
+            self.snap.diff_msg = "Vergleiche …".into();
             self.spawn(ctx, move |tx| {
                 let r = job::open(&cfg).and_then(|r| r.diff(&other, &base));
                 let _ = tx.send(Msg::Diff(r.map_err(|e| format!("{e:#}"))));
@@ -302,7 +302,7 @@ impl App {
     }
 
     fn load_dir(&mut self, ctx: &egui::Context) {
-        let (cfg, id, dir) = (self.cfg.clone(), self.selected.clone().unwrap_or_default(), self.dir.clone());
+        let (cfg, id, dir) = (self.cfg.clone(), self.snap.selected.clone().unwrap_or_default(), self.snap.dir.clone());
         self.spawn(ctx, move |tx| {
             let r = job::open(&cfg).and_then(|r| r.ls(&id, &dir));
             let _ = tx.send(Msg::Nodes(r.map_err(|e| format!("{e:#}"))));
@@ -313,10 +313,10 @@ impl App {
     /// `restore_in_place`, an den Originalort (unter Windows je Laufwerk ein restic-Aufruf).
     fn restore(&mut self, ctx: &egui::Context, id: String, include: Option<String>) {
         use crate::restore::{RestoreJob, RestoreOptions};
-        let (in_place, overwrite, verify) = (self.restore_in_place, self.restore_overwrite, self.restore_verify);
-        self.restored_to = None;
+        let (in_place, overwrite, verify) = (self.snap.restore_in_place, self.snap.restore_overwrite, self.snap.restore_verify);
+        self.snap.restored_to = None;
         let jobs = if in_place {
-            let paths = self.snapshots.iter().find(|s| s.id == id).map(|s| s.paths.clone()).unwrap_or_default();
+            let paths = self.snap.snapshots.iter().find(|s| s.id == id).map(|s| s.paths.clone()).unwrap_or_default();
             match crate::restore::in_place_jobs(&id, include.as_deref(), &paths, cfg!(windows)) {
                 Ok(j) => j,
                 Err(e) => {
@@ -325,10 +325,10 @@ impl App {
                 }
             }
         } else {
-            vec![RestoreJob { snapshot: id, target: self.restore_target.clone(), include }]
+            vec![RestoreJob { snapshot: id, target: self.snap.restore_target.clone(), include }]
         };
         // Leer = Originalort (dann gibt es keinen einzelnen Ordner zum Öffnen)
-        let shown_target = if in_place { String::new() } else { self.restore_target.clone() };
+        let shown_target = if in_place { String::new() } else { self.snap.restore_target.clone() };
         self.status = "Stelle wieder her …".into();
         let (cfg, cancel) = (self.cfg.clone(), self.cancel.clone());
         self.spawn(ctx, move |tx| {

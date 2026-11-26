@@ -10,6 +10,7 @@
 ### Geändert
 - Ein gesperrtes Repository erkennt die App bei restic ab 0.17 am Exit-Code statt am Wortlaut der Meldung; der Hinweis auf „Sperren entfernen“ erscheint damit zuverlässiger.
 - Weniger Last während eines Laufs: Fortschritt und Meldungen zeichnen das Fenster nur bei Bedarf neu (statt viermal pro Sekunde), restic meldet seinen Fortschritt seltener, und `restic version` wird nur noch einmal je Programmstart abgefragt.
+- Intern: Der Zustand des Fensters ist nach Tabs gegliedert (`SettingsForm`, `SnapshotView`, `ScheduleDiag`), statt rund 60 Felder in einer Ebene.
 - Intern: Die CI prüft den Code mit Clippy (Warnungen gelten als Fehler, unter Linux und Windows); die bisherigen Warnungen sind behoben.
 - Ein Backup aus dem Fenster endet im Protokoll wie ein Zeitplan-Lauf mit „Backup abgeschlossen.“ (bisher „Backup erfolgreich.“).
 - Intern: Die Workflows belegen weniger Actions-Speicher. Pakete aus Pull Requests bleiben nur noch 3 Tage, ein erfolgreicher main-Build löscht die Pakete älterer main-Builds, der Release-Workflow löscht die Artefakte nach dem Veröffentlichen (die Pakete liegen dann am Release), und den Rust-Cache legt nur noch main an.

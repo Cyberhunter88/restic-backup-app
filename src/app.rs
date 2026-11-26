@@ -67,51 +67,26 @@ impl Tab {
     ];
 }
 
-pub struct App {
-    cfg: Config,
-    tab: Tab,
+/// Eingaben im Tab „Einstellungen“, die nicht zur gespeicherten Konfiguration gehören.
+#[derive(Default)]
+struct SettingsForm {
     smb_pw: String,
     repo_pw: String,
     new_exclude: String,
     new_marker: String,
-    new_time: String,
-    autostart: bool,
     repo_msg: String,
-    tx: Sender<Msg>,
-    rx: Receiver<Msg>,
-    busy: bool,
-    /// Ein Backup läuft in einem anderen Prozess (Zeitplan); die App zeigt es an und kann es abbrechen
-    external_run: Option<crate::config::RunStatus>,
-    external_checked: std::time::Instant,
-    /// „Abbrechen“ wurde für den fremden Lauf schon gedrückt
-    external_cancel: bool,
-    progress: f32,
-    /// Text statt Balken, wenn die Gesamtmenge unbekannt ist (`--no-scan`)
-    progress_text: String,
-    log: Vec<String>,
-    /// Protokoll des letzten Laufs (einmal geladen statt bei jedem Frame von der Platte)
-    last_run: Option<String>,
-    history: Vec<crate::config::HistoryEntry>,
+}
+
+/// Zustand des Tabs „Snapshots“.
+struct SnapshotView {
     snapshots: Vec<Snapshot>,
-    snaps_loaded: bool,
-    overview: Option<job::RepoOverview>,
-    overview_msg: String,
-    last_check: Option<crate::config::LastCheck>,
-    /// Zeitplan pausiert bis (einmal geladen statt bei jedem Frame von der Platte)
-    pause_until: Option<chrono::NaiveDateTime>,
-    /// Neuere Version auf GitHub (Tag ohne `v`)
-    new_version: Option<String>,
-    update_msg: String,
+    loaded: bool,
     compare_with: Option<String>,
     diff: Option<Vec<DiffEntry>>,
     diff_msg: String,
-    /// Nach einem Backup die Repository-Daten neu laden (braucht den egui-Kontext)
-    pending_overview: bool,
-    tray: Option<crate::tray::Tray>,
-    quitting: bool,
-    snap_filter: String,
-    snap_folder: Option<String>,
-    snap_range: ui::SnapRange,
+    filter: String,
+    folder: Option<String>,
+    range: ui::SnapRange,
     selected: Option<String>,
     dir: String,
     nodes: Vec<Node>,
@@ -127,68 +102,19 @@ pub struct App {
     restore_verify: bool,
     /// Wiederherstellung am Originalort, die noch bestätigt werden muss: `(Snapshot-ID, Pfad oder ganzer Snapshot)`
     confirm_restore: Option<(String, Option<String>)>,
-    /// Die laufende Aufgabe lässt sich abbrechen (Wiederherstellung, Prüfung, Suche)
-    cancellable: bool,
-    /// Fortschritt der laufenden Aufgabe, falls bekannt
-    task_progress: Option<f32>,
-    /// Nach „Zeitplan aktivieren/entfernen“ die Diagnose neu laden (braucht den egui-Kontext)
-    pending_sched_status: bool,
-    status: String,
-    cancel: Arc<AtomicBool>,
-    /// Diagnose im Zeitplan-Tab (einmal geladen statt bei jedem Frame abgefragt)
-    sched_status: Option<schedule::Status>,
-    sched_check: String,
-    sched_log: Vec<(String, String)>,
-    sched_last_success: Option<chrono::NaiveDateTime>,
-    sched_failures: Option<(u32, chrono::NaiveDateTime)>,
-    /// Können geplante Läufe die Freigabe ohne Rückfrage einbinden (Linux: fstab-Eintrag)?
-    sched_mount_ready: bool,
-    /// Wann zuletzt auf „Backup überfällig“ geprüft wurde
-    overdue_checked: std::time::Instant,
 }
 
-impl App {
-    pub fn new(ctx: &egui::Context) -> Self {
-        let (tx, rx) = channel();
-        let cfg = Config::load().unwrap_or_default();
-        let mut app = Self {
-            cfg,
-            tab: Tab::Backup,
-            smb_pw: String::new(),
-            repo_pw: String::new(),
-            new_exclude: String::new(),
-            new_marker: String::new(),
-            new_time: "12:00".into(),
-            autostart: crate::autostart::is_enabled(),
-            repo_msg: String::new(),
-            tx,
-            rx,
-            busy: false,
-            external_run: None,
-            external_checked: std::time::Instant::now(),
-            external_cancel: false,
-            progress: 0.0,
-            progress_text: String::new(),
-            log: vec![],
-            last_run: crate::config::read_last_run(),
-            history: crate::config::read_history(8),
+impl Default for SnapshotView {
+    fn default() -> Self {
+        Self {
             snapshots: vec![],
-            snaps_loaded: false,
-            overview: None,
-            overview_msg: String::new(),
-            last_check: crate::config::read_last_check(),
-            pause_until: crate::config::read_pause(),
-            new_version: None,
-            update_msg: String::new(),
+            loaded: false,
             compare_with: None,
             diff: None,
             diff_msg: String::new(),
-            pending_overview: false,
-            tray: crate::tray::start(ctx.clone()),
-            quitting: false,
-            snap_filter: String::new(),
-            snap_folder: None,
-            snap_range: ui::SnapRange::All,
+            filter: String::new(),
+            folder: None,
+            range: ui::SnapRange::All,
             selected: None,
             dir: "/".into(),
             nodes: vec![],
@@ -201,17 +127,113 @@ impl App {
             restore_overwrite: crate::restore::Overwrite::Always,
             restore_verify: false,
             confirm_restore: None,
+        }
+    }
+}
+
+/// Diagnose im Tab „Zeitplan“ (einmal geladen statt bei jedem Frame abgefragt) und die Eingabe einer neuen Uhrzeit.
+struct ScheduleDiag {
+    status: Option<schedule::Status>,
+    check: String,
+    log: Vec<(String, String)>,
+    last_success: Option<chrono::NaiveDateTime>,
+    failures: Option<(u32, chrono::NaiveDateTime)>,
+    /// Können geplante Läufe die Freigabe ohne Rückfrage einbinden (Linux: fstab-Eintrag)?
+    mount_ready: bool,
+    new_time: String,
+}
+
+impl Default for ScheduleDiag {
+    fn default() -> Self {
+        Self { status: None, check: String::new(), log: vec![], last_success: None, failures: None, mount_ready: true, new_time: "12:00".into() }
+    }
+}
+
+pub struct App {
+    cfg: Config,
+    tab: Tab,
+    /// Eingaben im Tab „Einstellungen“
+    form: SettingsForm,
+    /// Snapshot-Liste, Dateibaum, Suche, Vergleich und Wiederherstellung (Tab „Snapshots“)
+    snap: SnapshotView,
+    /// Diagnose und Eingaben im Tab „Zeitplan“
+    sched: ScheduleDiag,
+    autostart: bool,
+    tx: Sender<Msg>,
+    rx: Receiver<Msg>,
+    busy: bool,
+    /// Ein Backup läuft in einem anderen Prozess (Zeitplan); die App zeigt es an und kann es abbrechen
+    external_run: Option<crate::config::RunStatus>,
+    external_checked: std::time::Instant,
+    /// „Abbrechen“ wurde für den fremden Lauf schon gedrückt
+    external_cancel: bool,
+    progress: f32,
+    /// Text statt Balken, wenn die Gesamtmenge unbekannt ist (`--no-scan`)
+    progress_text: String,
+    log: Vec<String>,
+    /// Protokoll des letzten Laufs (einmal geladen statt bei jedem Frame von der Platte)
+    last_run: Option<String>,
+    history: Vec<crate::config::HistoryEntry>,
+    overview: Option<job::RepoOverview>,
+    overview_msg: String,
+    last_check: Option<crate::config::LastCheck>,
+    /// Zeitplan pausiert bis (einmal geladen statt bei jedem Frame von der Platte)
+    pause_until: Option<chrono::NaiveDateTime>,
+    /// Neuere Version auf GitHub (Tag ohne `v`)
+    new_version: Option<String>,
+    update_msg: String,
+    /// Nach einem Backup die Repository-Daten neu laden (braucht den egui-Kontext)
+    pending_overview: bool,
+    tray: Option<crate::tray::Tray>,
+    quitting: bool,
+    /// Die laufende Aufgabe lässt sich abbrechen (Wiederherstellung, Prüfung, Suche)
+    cancellable: bool,
+    /// Fortschritt der laufenden Aufgabe, falls bekannt
+    task_progress: Option<f32>,
+    /// Nach „Zeitplan aktivieren/entfernen“ die Diagnose neu laden (braucht den egui-Kontext)
+    pending_sched_status: bool,
+    status: String,
+    cancel: Arc<AtomicBool>,
+    /// Wann zuletzt auf „Backup überfällig“ geprüft wurde
+    overdue_checked: std::time::Instant,
+}
+
+impl App {
+    pub fn new(ctx: &egui::Context) -> Self {
+        let (tx, rx) = channel();
+        let cfg = Config::load().unwrap_or_default();
+        let mut app = Self {
+            cfg,
+            tab: Tab::Backup,
+            form: SettingsForm::default(),
+            snap: SnapshotView::default(),
+            sched: ScheduleDiag::default(),
+            autostart: crate::autostart::is_enabled(),
+            tx,
+            rx,
+            busy: false,
+            external_run: None,
+            external_checked: std::time::Instant::now(),
+            external_cancel: false,
+            progress: 0.0,
+            progress_text: String::new(),
+            log: vec![],
+            last_run: crate::config::read_last_run(),
+            history: crate::config::read_history(8),
+            overview: None,
+            overview_msg: String::new(),
+            last_check: crate::config::read_last_check(),
+            pause_until: crate::config::read_pause(),
+            new_version: None,
+            update_msg: String::new(),
+            pending_overview: false,
+            tray: crate::tray::start(ctx.clone()),
+            quitting: false,
             cancellable: false,
             task_progress: None,
             pending_sched_status: false,
             status: String::new(),
             cancel: Arc::new(AtomicBool::new(false)),
-            sched_status: None,
-            sched_check: String::new(),
-            sched_log: vec![],
-            sched_last_success: None,
-            sched_failures: None,
-            sched_mount_ready: true,
             overdue_checked: std::time::Instant::now(),
         };
         // Veralteten Zeitplan (nach Programm-Aktualisierung) still erneuern
@@ -276,12 +298,12 @@ impl App {
 
     /// Dateien des Zeitplans (Protokoll, letzter Erfolg, Fehlerzähler) für die Diagnose neu lesen.
     fn reload_schedule_files(&mut self) {
-        self.sched_log = crate::config::read_schedule_log(8);
-        self.sched_last_success = crate::config::read_last_success();
-        self.sched_failures = crate::config::read_schedule_failures();
+        self.sched.log = crate::config::read_schedule_log(8);
+        self.sched.last_success = crate::config::read_last_success();
+        self.sched.failures = crate::config::read_schedule_failures();
         #[cfg(unix)]
         {
-            self.sched_mount_ready = smb::scheduled_mount_ready(&self.cfg);
+            self.sched.mount_ready = smb::scheduled_mount_ready(&self.cfg);
         }
     }
 
@@ -298,7 +320,7 @@ impl App {
 
     /// „Zeitplan prüfen“: Was täte ein Zeitplan-Lauf jetzt? Startet kein Backup.
     fn check_schedule(&mut self, ctx: &egui::Context) {
-        self.sched_check = "Prüfe …".into();
+        self.sched.check = "Prüfe …".into();
         let (tx, ctx, cfg) = (self.tx.clone(), ctx.clone(), self.cfg.clone());
         std::thread::spawn(move || {
             let _ = tx.send(Msg::SchedCheck(crate::scheduled::dry_run(&cfg)));
@@ -386,7 +408,7 @@ impl App {
             self.last_run = crate::config::read_last_run();
             self.history = crate::config::read_history(8);
             self.last_check = crate::config::read_last_check();
-            self.snaps_loaded = false;
+            self.snap.loaded = false;
             if self.overview.is_some() {
                 self.pending_overview = true;
             }
@@ -428,7 +450,7 @@ impl App {
                     self.last_run = crate::config::read_last_run();
                     self.history = crate::config::read_history(8);
                     self.last_check = crate::config::read_last_check();
-                    self.snaps_loaded = false;
+                    self.snap.loaded = false;
                     if self.overview.is_some() {
                         self.pending_overview = true;
                     }
@@ -449,8 +471,8 @@ impl App {
                     match r {
                         Ok(mut s) => {
                             s.reverse();
-                            self.snapshots = s;
-                            self.snaps_loaded = true;
+                            self.snap.snapshots = s;
+                            self.snap.loaded = true;
                         }
                         Err(e) => self.status = format!("FEHLER: {e}"),
                     }
@@ -458,7 +480,7 @@ impl App {
                 Msg::Nodes(r) => {
                     self.busy = false;
                     match r {
-                        Ok(n) => self.nodes = n,
+                        Ok(n) => self.snap.nodes = n,
                         Err(e) => self.status = format!("FEHLER: {e}"),
                     }
                 }
@@ -467,23 +489,23 @@ impl App {
                     match r {
                         Ok(n) => {
                             self.status = if n.len() >= FIND_LIMIT { format!("Mehr als {FIND_LIMIT} Treffer – Suchbegriff genauer fassen.") } else { String::new() };
-                            self.found = Some(n);
+                            self.snap.found = Some(n);
                         }
                         Err(e) => self.status = self.error_text(e),
                     }
                 }
                 Msg::RepoInfo(r) => {
                     self.busy = false;
-                    self.repo_msg = r.unwrap_or_else(|e| format!("FEHLER: {e}"));
+                    self.form.repo_msg = r.unwrap_or_else(|e| format!("FEHLER: {e}"));
                 }
                 Msg::Diff(r) => {
                     self.busy = false;
                     match r {
                         Ok(d) => {
-                            self.diff = Some(d);
-                            self.diff_msg.clear();
+                            self.snap.diff = Some(d);
+                            self.snap.diff_msg.clear();
                         }
-                        Err(e) => self.diff_msg = format!("FEHLER: {e}"),
+                        Err(e) => self.snap.diff_msg = format!("FEHLER: {e}"),
                     }
                 }
                 Msg::Overview(r) => {
@@ -518,8 +540,8 @@ impl App {
                         Err(_) => {}
                     }
                 }
-                Msg::SchedStatus(s) => self.sched_status = Some(s),
-                Msg::SchedCheck(m) => self.sched_check = m,
+                Msg::SchedStatus(s) => self.sched.status = Some(s),
+                Msg::SchedCheck(m) => self.sched.check = m,
                 Msg::SchedDone(m) => {
                     self.busy = false;
                     self.status = m;
@@ -533,7 +555,7 @@ impl App {
                         Ok(target) if target.is_empty() => self.status = "Wiederherstellung am Originalort abgeschlossen.".into(),
                         Ok(target) => {
                             self.status = format!("Wiederherstellung nach {target} abgeschlossen.");
-                            self.restored_to = Some(target);
+                            self.snap.restored_to = Some(target);
                         }
                         Err(e) => self.status = self.error_text(e),
                     }
@@ -545,12 +567,12 @@ impl App {
     fn goto(&mut self, ctx: &egui::Context, tab: Tab) {
         self.tab = tab;
         self.status.clear();
-        self.repo_msg.clear();
-        if tab == Tab::Snapshots && !self.snaps_loaded && !self.busy && self.cfg.is_ready() {
+        self.form.repo_msg.clear();
+        if tab == Tab::Snapshots && !self.snap.loaded && !self.busy && self.cfg.is_ready() {
             self.load_snapshots(ctx);
         }
         if tab == Tab::Schedule {
-            self.sched_check.clear();
+            self.sched.check.clear();
             self.load_schedule_status(ctx);
         }
     }
