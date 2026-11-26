@@ -2,6 +2,8 @@
 
 ## [Unveröffentlicht]
 
+## [0.4.2]
+
 ### Behoben
 - Windows: Ließ sich die Freigabe mit `net use` nicht über die Eingabe verbinden, übergab die App das SMB-Passwort als Argument; es war dann kurz in der Prozessliste sichtbar. Dieser Rückfall läuft jetzt direkt über die Windows-API (`WNetAddConnection2W`), ohne das Passwort in einer Befehlszeile.
 - Aufräumen alter Snapshots (`forget --prune`), die regelmäßige Teilprüfung und das Laden der Repository-Größe ließen sich nicht abbrechen. „Abbrechen“ und das Beenden der App wirkten erst, wenn restic damit fertig war; bis dahin blieb auch die Freigabe eingebunden. Ein Abbruch beim Aufräumen oder Prüfen beendet jetzt nur diese Schritte; das Backup selbst ist dann schon gesichert und zählt als „mit Warnungen“.
@@ -10,9 +12,9 @@
 ### Geändert
 - Ein gesperrtes Repository erkennt die App bei restic ab 0.17 am Exit-Code statt am Wortlaut der Meldung; der Hinweis auf „Sperren entfernen“ erscheint damit zuverlässiger.
 - Weniger Last während eines Laufs: Fortschritt und Meldungen zeichnen das Fenster nur bei Bedarf neu (statt viermal pro Sekunde), restic meldet seinen Fortschritt seltener, und `restic version` wird nur noch einmal je Programmstart abgefragt.
+- Ein Backup aus dem Fenster endet im Protokoll wie ein Zeitplan-Lauf mit „Backup abgeschlossen.“ (bisher „Backup erfolgreich.“).
 - Intern: Der Zustand des Fensters ist nach Tabs gegliedert (`SettingsForm`, `SnapshotView`, `ScheduleDiag`), statt rund 60 Felder in einer Ebene.
 - Intern: Die CI prüft den Code mit Clippy (Warnungen gelten als Fehler, unter Linux und Windows); die bisherigen Warnungen sind behoben.
-- Ein Backup aus dem Fenster endet im Protokoll wie ein Zeitplan-Lauf mit „Backup abgeschlossen.“ (bisher „Backup erfolgreich.“).
 - Intern: Die Workflows belegen weniger Actions-Speicher. Pakete aus Pull Requests bleiben nur noch 3 Tage, ein erfolgreicher main-Build löscht die Pakete älterer main-Builds, der Release-Workflow löscht die Artefakte nach dem Veröffentlichen (die Pakete liegen dann am Release), und den Rust-Cache legt nur noch main an.
 
 ## [0.4.1]
