@@ -135,6 +135,8 @@ fn backup_sources(r: &Restic, cfg: &Config, host: &str, cancel: &AtomicBool, mut
     let groups: Vec<&[String]> = if cfg.separate_snapshots { cfg.sources.chunks(1).collect() } else { vec![&cfg.sources[..]] };
     let mut outcome = BackupOutcome::default();
     let mut errors = vec![];
+    // Der erste Fehler als solcher (nicht nur als Text), damit z. B. eine Repo-Sperre am Exit-Code erkennbar bleibt
+    let mut first_error: Option<anyhow::Error> = None;
     let tuning = crate::restic::tuning_for(r.version());
     let excludes = excludes_with_data_dir(&cfg.excludes);
     for group in &groups {
@@ -179,11 +181,16 @@ fn backup_sources(r: &Restic, cfg: &Config, host: &str, cancel: &AtomicBool, mut
             Err(e) => {
                 log(format!("Fehler bei {}: {e:#}", group.join(", ")));
                 errors.push(format!("{}: {e:#}", group.join(", ")));
+                first_error.get_or_insert(e.context(group.join(", ")));
             }
         }
     }
     if errors.len() == groups.len() {
-        bail!("{}", errors.join("\n"));
+        // Ein einzelner Fehler behält seinen Typ, bei mehreren zählt der gemeinsame Text
+        match first_error {
+            Some(e) if errors.len() == 1 => return Err(e),
+            _ => bail!("{}", errors.join("\n")),
+        }
     }
     if !errors.is_empty() {
         outcome.warnings = true;
@@ -286,7 +293,7 @@ pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log
         log(format!("Warnung: Unmount fehlgeschlagen: {e}"));
     }
     result.map_err(|e| {
-        if format!("{e:#}").contains("locked") {
+        if crate::restic::is_locked(&e) {
             e.context("Das Repository ist gesperrt. Im Tab „Snapshots“ lassen sich die Sperren mit „Sperren entfernen“ löschen")
         } else {
             e
