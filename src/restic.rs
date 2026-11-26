@@ -466,15 +466,17 @@ impl Restic {
         Ok(())
     }
 
-    pub fn forget(&self, daily: u32, weekly: u32, monthly: u32, host: &str, prune: bool) -> Result<()> {
+    /// Abbrechbar: Ein Prune liest und schreibt über SMB unter Umständen lange.
+    pub fn forget(&self, daily: u32, weekly: u32, monthly: u32, host: &str, prune: bool, cancel: &AtomicBool) -> Result<()> {
         if daily + weekly + monthly == 0 {
             bail!("Keine Aufbewahrungsregel gesetzt – forget würde nichts behalten");
         }
-        self.run(&forget_args(daily, weekly, monthly, host, prune)).map(|_| ())
+        self.run_cancellable(&forget_args(daily, weekly, monthly, host, prune), cancel).map(|_| ())
     }
 
-    pub fn stats(&self) -> Result<RepoStats> {
-        let out = self.run(&Self::s(&["stats", "--json", "--mode", "raw-data"]))?;
+    /// Abbrechbar: `stats` liest den ganzen Index über SMB.
+    pub fn stats(&self, cancel: &AtomicBool) -> Result<RepoStats> {
+        let out = self.run_cancellable(&Self::s(&["stats", "--json", "--mode", "raw-data"]), cancel)?;
         parse_stats(&out).context("Unerwartete Ausgabe von restic stats")
     }
 
@@ -482,9 +484,9 @@ impl Restic {
         Ok(parse_diff(&self.run(&["diff".into(), "--json".into(), a.into(), b.into()])?))
     }
 
-    /// Prüft die Struktur und liest einen Teil der Daten (`--read-data-subset=N%`).
-    pub fn check_subset(&self, percent: u32) -> Result<()> {
-        self.run(&["check".into(), "--with-cache".into(), format!("--read-data-subset={percent}%")]).map(|_| ())
+    /// Prüft die Struktur und liest einen Teil der Daten (`--read-data-subset=N%`); abbrechbar.
+    pub fn check_subset(&self, percent: u32, cancel: &AtomicBool) -> Result<()> {
+        self.run_cancellable(&["check".into(), "--with-cache".into(), format!("--read-data-subset={percent}%")], cancel).map(|_| ())
     }
 
     /// Entfernt Repository-Sperren (`restic unlock`, mit `remove_all` auch aktive).
@@ -841,7 +843,7 @@ kein json
         }
         let restored = restored.join("a.txt");
         assert_eq!(std::fs::read_to_string(restored).unwrap(), "hallo");
-        r.forget(1, 0, 0, "", true).unwrap();
+        r.forget(1, 0, 0, "", true, &AtomicBool::new(false)).unwrap();
         r.check(&AtomicBool::new(false)).unwrap();
     }
 }
