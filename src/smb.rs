@@ -418,14 +418,6 @@ mod windows {
         }
     }
 
-    #[cfg(test)]
-    mod tests {
-        /// Prüft Anbindung und Aufruf der API: Eine nicht vorhandene Freigabe liefert einen Fehlercode, keinen Absturz.
-        #[test]
-        fn add_connection_reports_error() {
-            assert!(super::add_connection(r"\\127.0.0.1\gibt-es-nicht-restic-test", "niemand", "falsch").is_err());
-        }
-    }
 
     /// Weitere Namen für denselben Server. Windows merkt sich Anmeldungen je Servername und nicht
     /// je Rechner: Unter einem anderen Namen (z. B. `nas.local` statt `192.168.178.5`) ist deshalb
@@ -489,6 +481,15 @@ mod windows {
     pub fn unmount(cfg: &Config) -> Result<()> {
         let unc = format!(r"\\{}\{}", host(cfg), cfg.share);
         net(&["use", &unc, "/delete", "/y"]).map(|_| ())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        /// Prüft Anbindung und Aufruf der API: Eine nicht vorhandene Freigabe liefert einen Fehlercode, keinen Absturz.
+        #[test]
+        fn add_connection_reports_error() {
+            assert!(super::add_connection(r"\\127.0.0.1\gibt-es-nicht-restic-test", "niemand", "falsch").is_err());
+        }
     }
 }
 
