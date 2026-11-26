@@ -49,6 +49,12 @@ Das Skript holt die Build-Abhängigkeiten, baut ein pacman-Paket (`restic`, `cif
 
 Das Ergebnis des letzten Laufs steht im Backup-Tab (`last-run.log` im Datenverzeichnis der App).
 
+## Wo die Passwörter liegen
+- **Dauerhaft** liegen SMB- und Repo-Passwort nur im System-Schlüsselbund (Linux: Secret Service, z. B. KWallet oder GNOME Keyring; Windows: Anmeldeinformationsverwaltung). Der Export der Einstellungen enthält keine Passwörter.
+- **Linux:** Zum Einbinden schreibt die App bei jedem Mount die Datei `smb.cred` (SMB-Benutzer und -Passwort im Klartext, nur für den eigenen Benutzer lesbar, Rechte `0600`) ins Datenverzeichnis (`~/.local/share/restic-backup-app/`). `mount.cifs` braucht sie, damit der Mount ohne Root-Rückfrage über den fstab-Eintrag klappt. Das Datenverzeichnis ist von jedem Backup ausgeschlossen.
+- **Während eines Laufs** bekommt restic das Repo-Passwort über die Umgebungsvariable `RESTIC_PASSWORD`. Andere Programme desselben Benutzers (und Administratoren) können sie lesen, solange restic läuft, andere Benutzer nicht.
+- **Windows:** Das SMB-Passwort geht über die Eingabe an `net use` bzw. direkt an die Windows-API, nie als Befehlszeilen-Argument, und steht deshalb in keiner Prozessliste.
+
 ## Entwicklung
 ```
 cargo test
