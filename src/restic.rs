@@ -48,6 +48,35 @@ pub struct BackupOutcome {
     pub warnings: bool,
 }
 
+/// Exit-Code von restic (ab 0.17): Das Repository ist von einem anderen Lauf gesperrt.
+pub const EXIT_LOCKED: i32 = 11;
+
+/// Ein restic-Aufruf ist mit diesem Exit-Code gescheitert. Die Anzeige ist nur die Meldung; den Code braucht
+/// `is_locked`, um eine Sperre ohne Textvergleich zu erkennen.
+#[derive(Debug)]
+pub struct ResticFailed {
+    pub code: Option<i32>,
+    pub message: String,
+}
+
+impl std::fmt::Display for ResticFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ResticFailed {}
+
+fn failed(status: std::process::ExitStatus, message: String) -> anyhow::Error {
+    ResticFailed { code: status.code(), message }.into()
+}
+
+/// Scheiterte restic, weil das Repository gesperrt ist? Exit-Code 11 (ab restic 0.17); ältere Versionen erkennt
+/// nur der Text („unable to create lock“, „repository is already locked“).
+pub fn is_locked(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.downcast_ref::<ResticFailed>().is_some_and(|f| f.code == Some(EXIT_LOCKED))) || format!("{e:#}").contains("locked")
+}
+
 /// Rechnername, so wie restic ihn als Standard-Host verwendet.
 pub fn local_hostname() -> String {
     // Wie restic (`os.Hostname`): der Kernel-Name. Das Programm `hostname` fehlt auf manchen Distributionen (z. B. Arch)
@@ -367,6 +396,9 @@ impl Restic {
         c.args(args)
             .env("RESTIC_REPOSITORY", &self.repo)
             .env("RESTIC_PASSWORD", &self.password)
+            // Mit `--json` meldet restic den Fortschritt sonst etwa 10-mal pro Sekunde (gemessen mit 0.20); 4 reichen
+            // für Balken und Statusdatei
+            .env("RESTIC_PROGRESS_FPS", "4")
             .stdin(Stdio::null());
         // Fester Cache im Datenverzeichnis: GUI und Zeitplan (evtl. anderes Konto) nutzen denselben Cache,
         // sonst liest restic die Metadaten bei jedem Lauf neu über SMB
@@ -387,7 +419,7 @@ impl Restic {
             .output()
             .with_context(|| format!("'{}' konnte nicht gestartet werden", self.bin))?;
         if !out.status.success() {
-            bail!("restic {} fehlgeschlagen: {}", args.first().map(String::as_str).unwrap_or(""), String::from_utf8_lossy(&out.stderr).trim());
+            return Err(failed(out.status, format!("restic {} fehlgeschlagen: {}", args.first().map(String::as_str).unwrap_or(""), String::from_utf8_lossy(&out.stderr).trim())));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
@@ -420,8 +452,16 @@ impl Restic {
     }
 
     /// Version des restic-Programms (Major, Minor); `None`, wenn sie sich nicht ermitteln lässt.
+    /// Das Ergebnis wird je Programmpfad gemerkt (ein Aufruf je Prozess statt einem je Backup bzw. Wiederherstellung);
+    /// ein Fehlschlag nicht, damit ein später installiertes restic erkannt wird.
     pub fn version(&self) -> Option<(u32, u32)> {
-        parse_version(&self.run(&Self::s(&["version"])).ok()?)
+        static CACHE: Mutex<Option<(String, (u32, u32))>> = Mutex::new(None);
+        if let Some((bin, v)) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() && *bin == self.bin {
+            return Some(*v);
+        }
+        let v = parse_version(&self.run(&Self::s(&["version"])).ok()?)?;
+        *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some((self.bin.clone(), v));
+        Some(v)
     }
 
     pub fn init(&self) -> Result<()> {
@@ -559,7 +599,7 @@ impl Restic {
             bail!("Abgebrochen");
         }
         if !s.status.success() {
-            bail!("restic {} fehlgeschlagen: {}", args.first().map(String::as_str).unwrap_or(""), s.stderr.trim());
+            return Err(failed(s.status, format!("restic {} fehlgeschlagen: {}", args.first().map(String::as_str).unwrap_or(""), s.stderr.trim())));
         }
         Ok(out)
     }
@@ -586,7 +626,7 @@ impl Restic {
             // Snapshot wurde geschrieben (Summary erhalten), aber restic meldet Lesefehler (z. B. "Zugriff verweigert"
             // unter Windows) → Warnung statt Fehler
             Some(_) if got_summary => Ok(BackupOutcome { warnings: true }),
-            _ => bail!("restic backup fehlgeschlagen: {}", err.trim()),
+            _ => Err(failed(status, format!("restic backup fehlgeschlagen: {}", err.trim()))),
         }
     }
 }
@@ -663,6 +703,15 @@ kein json
     fn forget_skips_zero() {
         assert_eq!(forget_args(7, 0, 6, "", false), ["forget", "--keep-daily", "7", "--keep-monthly", "6"]);
         assert_eq!(forget_args(1, 0, 0, "pc", true), ["forget", "--prune", "--max-unused", "10%", "--host", "pc", "--keep-daily", "1"]);
+    }
+
+    #[test]
+    fn locked_by_exit_code_or_text() {
+        let e = anyhow::Error::from(ResticFailed { code: Some(EXIT_LOCKED), message: "restic forget fehlgeschlagen: x".into() }).context("Aufräumen");
+        assert!(is_locked(&e));
+        assert!(!is_locked(&ResticFailed { code: Some(1), message: "Fatal: kaputt".into() }.into()));
+        // Ältere restic-Versionen: nur der Text
+        assert!(is_locked(&anyhow::anyhow!("unable to create lock in backend: repository is already locked by PID 1")));
     }
 
     #[test]

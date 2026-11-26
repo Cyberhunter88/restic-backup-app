@@ -351,10 +351,23 @@ impl App {
         self.cancel.store(false, Ordering::Relaxed);
         self.cancellable = false;
         self.task_progress = None;
-        let tx = self.tx.clone();
+        // Jede Meldung weckt die Oberfläche sofort (auch versteckt im Tray), statt dass sie im Takt nachsehen muss.
+        // Der Weiterleiter endet, sobald die Aufgabe ihren Sender (samt Klonen) fallen lässt.
+        let (task_tx, task_rx) = channel::<Msg>();
+        let (tx, wake) = (self.tx.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            for m in task_rx {
+                // Fortschritt gesammelt höchstens alle 250 ms zeichnen, alles andere sofort
+                let progress = matches!(m, Msg::Event(BackupEvent::Progress { .. }) | Msg::RestoreProgress(_));
+                if tx.send(m).is_err() {
+                    break;
+                }
+                if progress { wake.request_repaint_after(std::time::Duration::from_millis(250)) } else { wake.request_repaint() }
+            }
+        });
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            f(tx);
+            f(task_tx);
             ctx.request_repaint();
         });
     }
@@ -655,9 +668,9 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
         self.poll_external_run();
-        // Meldungen der Threads kommen ohne eigenen Repaint an: im Takt nachsehen, solange etwas läuft
+        // Meldungen der Aufgaben wecken die Oberfläche selbst (`spawn`); der Takt ist nur ein Rückfall
         if self.busy {
-            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
         } else {
             // Einen Zeitplan-Lauf bemerken, auch wenn das Fenster still steht oder versteckt ist
             ctx.request_repaint_after(std::time::Duration::from_secs(if self.external_run.is_some() { 1 } else { 3 }));
