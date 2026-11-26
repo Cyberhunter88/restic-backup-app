@@ -43,6 +43,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           # Nur main legt Caches an (Pull Requests nutzen sie mit), sonst speichert jeder PR
@@ -86,6 +88,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      # Warnungen sind Fehler; unter Windows prüft das auch den `#[cfg(windows)]`-Code
+      - name: Clippy
+        run: cargo clippy --release --all-targets -- -D warnings
       - run: cargo test --release
       - run: cargo build --release
 

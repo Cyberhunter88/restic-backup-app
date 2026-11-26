@@ -11,7 +11,7 @@ Rust-Desktop-App (eframe/egui) für restic-Backups auf ein NAS per SMB, Windows 
 - Headless-Lauf wie vom Zeitplan: `restic-backup-app --run-backup`; `--autostart` startet das Fenster minimiert
 - Release-Profil: Thin-LTO und `strip`; kein `panic = "abort"` (der Tray-Thread unter Linux verlässt sich aufs Unwinding)
 - Zustandsdateien im Datenverzeichnis immer über `config::write_atomic` schreiben
-- Kein Linter konfiguriert; `#[cfg(windows)]`-Code lässt sich unter Linux nicht kompilieren oder testen, er wird erst in der Windows-CI geprüft
+- Linter: `cargo clippy --all-targets -- -D warnings` läuft in der CI auf Linux und Windows (Warnungen brechen den Build ab), also vor dem Push lokal ausführen. `#[cfg(windows)]`-Code lässt sich unter Linux nicht kompilieren, prüfen oder testen, er wird erst in der Windows-CI geprüft. Kein `rustfmt`: Der Code nutzt lange Zeilen, `cargo fmt` würde alles umformatieren
 
 ## Workflow
 - Repo ist öffentlich, Lizenz MIT. `main` ist geschützt wie bei den anderen Projekten (z. B. cctv-viewer): nur per Pull Request, Pflichtprüfung „Anwendung prüfen“ (Job `pruefen` in `build.yml`, wartet auf Linux- und Windows-Build), Branch muss aktuell sein, Kommentare gelöst, Admins eingeschlossen, kein Force-Push. Also nie direkt auf `main` arbeiten: eigener Branch + PR, selbst mergen (keine Freigabe nötig). Der lokale `pre-push`-Hook (`git config core.hooksPath .githooks`) blockiert Pushes auf `main` zusätzlich.

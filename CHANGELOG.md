@@ -7,6 +7,7 @@
 - Zeitplan-Läufe: Unter „Frühere Läufe“ und in `last-run.log` stand nur „Backup abgeschlossen.“, ohne neue Dateien und hinzugefügte Datenmenge. Jetzt steht dort dieselbe Zusammenfassung wie bei einem Backup aus dem Fenster.
 
 ### Geändert
+- Intern: Die CI prüft den Code mit Clippy (Warnungen gelten als Fehler, unter Linux und Windows); die bisherigen Warnungen sind behoben.
 - Ein Backup aus dem Fenster endet im Protokoll wie ein Zeitplan-Lauf mit „Backup abgeschlossen.“ (bisher „Backup erfolgreich.“).
 - Intern: Die Workflows belegen weniger Actions-Speicher. Pakete aus Pull Requests bleiben nur noch 3 Tage, ein erfolgreicher main-Build löscht die Pakete älterer main-Builds, der Release-Workflow löscht die Artefakte nach dem Veröffentlichen (die Pakete liegen dann am Release), und den Rust-Cache legt nur noch main an.
 

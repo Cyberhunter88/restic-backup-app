@@ -156,15 +156,11 @@ impl SnapRange {
 
 /// Passt ein Snapshot zu Textfilter, Ordner und Zeitraum? Alle Filter wirken zusammen (UND).
 pub fn snapshot_matches(s: &crate::restic::Snapshot, needle: &str, folder: Option<&str>, range: SnapRange, now: chrono::DateTime<chrono::Local>) -> bool {
-    if let Some(f) = folder {
-        if !s.paths.iter().any(|p| p == f) {
-            return false;
-        }
+    if let Some(f) = folder && !s.paths.iter().any(|p| p == f) {
+        return false;
     }
-    if let (Some(days), Ok(t)) = (range.days(), chrono::DateTime::parse_from_rfc3339(&s.time)) {
-        if now.signed_duration_since(t).num_days() >= days {
-            return false;
-        }
+    if let (Some(days), Ok(t)) = (range.days(), chrono::DateTime::parse_from_rfc3339(&s.time)) && now.signed_duration_since(t).num_days() >= days {
+        return false;
     }
     let needle = needle.to_lowercase();
     needle.is_empty() || [short_time(&s.time), s.hostname.clone(), s.paths.join(", "), s.short_id.clone()].iter().any(|f| f.to_lowercase().contains(&needle))
@@ -190,6 +186,27 @@ pub fn age_text(head: &str, now: chrono::NaiveDateTime) -> Option<(String, bool)
 /// Morgen früh um 6 Uhr (Ende der Kurz-Pause).
 pub fn tomorrow_morning(now: chrono::NaiveDateTime) -> chrono::NaiveDateTime {
     (now.date() + chrono::Duration::days(1)).and_hms_opt(6, 0, 0).unwrap_or(now)
+}
+
+/// Lässt sich das Fenster verstecken? Unter Wayland geht das nicht (winit ignoriert den Befehl); deshalb läuft das
+/// Fenster dort über XWayland (`prefer_x11`), solange ein X-Server da ist.
+pub fn can_hide_window() -> bool {
+    !cfg!(target_os = "linux") || !env_set("WAYLAND_DISPLAY") || env_set("DISPLAY")
+}
+
+/// Linux mit Wayland und XWayland: Das Fenster soll X11 nutzen, damit das X es verstecken kann.
+#[cfg(target_os = "linux")]
+pub fn prefer_x11() -> bool {
+    env_set("WAYLAND_DISPLAY") && env_set("DISPLAY")
+}
+
+fn env_set(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|v| !v.is_empty())
+}
+
+/// Befehl, der das Fenster in den Hintergrund schickt: verstecken, notfalls (reines Wayland) minimieren.
+pub fn hide_command() -> egui::ViewportCommand {
+    if can_hide_window() { egui::ViewportCommand::Visible(false) } else { egui::ViewportCommand::Minimized(true) }
 }
 
 #[cfg(test)]
@@ -251,24 +268,4 @@ mod tests {
         assert_eq!(status_color("FEHLER: x"), ERR);
         assert_eq!(status_color("Gespeichert."), OK);
     }
-}
-
-/// Lässt sich das Fenster verstecken? Unter Wayland geht das nicht (winit ignoriert den Befehl); deshalb läuft das
-/// Fenster dort über XWayland (`prefer_x11`), solange ein X-Server da ist.
-pub fn can_hide_window() -> bool {
-    !cfg!(target_os = "linux") || !env_set("WAYLAND_DISPLAY") || env_set("DISPLAY")
-}
-
-/// Linux mit Wayland und XWayland: Das Fenster soll X11 nutzen, damit das X es verstecken kann.
-pub fn prefer_x11() -> bool {
-    cfg!(target_os = "linux") && env_set("WAYLAND_DISPLAY") && env_set("DISPLAY")
-}
-
-fn env_set(name: &str) -> bool {
-    std::env::var_os(name).is_some_and(|v| !v.is_empty())
-}
-
-/// Befehl, der das Fenster in den Hintergrund schickt: verstecken, notfalls (reines Wayland) minimieren.
-pub fn hide_command() -> egui::ViewportCommand {
-    if can_hide_window() { egui::ViewportCommand::Visible(false) } else { egui::ViewportCommand::Minimized(true) }
 }
