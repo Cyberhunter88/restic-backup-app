@@ -366,16 +366,58 @@ mod windows {
         if already_connected(&out) {
             return Ok(Conn::Conflict);
         }
-        // Fallback: Passwort als Argument (kurzzeitig in der Prozessliste sichtbar)
-        let out = net(&["use", &unc, password, &user, "/persistent:no"])?;
-        if out.status.success() {
-            return Ok(Conn::New);
+        // Rückfall direkt über die Windows-API: Das Passwort bleibt im Speicher und steht in keiner Prozessliste
+        // (früher als Argument an `net use`)
+        match add_connection(&unc, &cfg.smb_user, password) {
+            Ok(()) => Ok(Conn::New),
+            Err(ERROR_SESSION_CREDENTIAL_CONFLICT) => Ok(Conn::Conflict),
+            Err(code) => bail!("SMB-Verbindung fehlgeschlagen: {} (net use: {})", std::io::Error::from_raw_os_error(code as i32), text(&out).trim()),
         }
-        if already_connected(&out) {
-            return Ok(Conn::Conflict);
-        }
-        bail!("SMB-Verbindung fehlgeschlagen: {}", text(&out).trim());
     }
+
+    /// Windows-Fehler: Für diesen Server besteht schon eine Anmeldung mit anderem Benutzer.
+    const ERROR_SESSION_CREDENTIAL_CONFLICT: u32 = 1219;
+
+    /// Verbindet `unc` mit Benutzer und Passwort (`WNetAddConnection2W`, nicht dauerhaft, ohne Laufwerksbuchstaben).
+    /// `Err` ist der Windows-Fehlercode.
+    fn add_connection(unc: &str, user: &str, password: &str) -> std::result::Result<(), u32> {
+        #[repr(C)]
+        struct NetResourceW {
+            scope: u32,
+            kind: u32,
+            display_type: u32,
+            usage: u32,
+            local_name: *mut u16,
+            remote_name: *mut u16,
+            comment: *mut u16,
+            provider: *mut u16,
+        }
+        #[link(name = "mpr")]
+        unsafe extern "system" {
+            fn WNetAddConnection2W(resource: *const NetResourceW, password: *const u16, user: *const u16, flags: u32) -> u32;
+        }
+        const RESOURCETYPE_DISK: u32 = 1;
+        const CONNECT_TEMPORARY: u32 = 4;
+        let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let (mut remote, pw, user) = (wide(unc), wide(password), wide(user));
+        let res = NetResourceW {
+            scope: 0,
+            kind: RESOURCETYPE_DISK,
+            display_type: 0,
+            usage: 0,
+            local_name: std::ptr::null_mut(),
+            remote_name: remote.as_mut_ptr(),
+            comment: std::ptr::null_mut(),
+            provider: std::ptr::null_mut(),
+        };
+        // SAFETY: Alle Zeichenketten sind nullterminiert und leben über den Aufruf hinaus; nicht benutzte Felder
+        // sind laut API optional (null).
+        match unsafe { WNetAddConnection2W(&res, pw.as_ptr(), user.as_ptr(), CONNECT_TEMPORARY) } {
+            0 => Ok(()),
+            code => Err(code),
+        }
+    }
+
 
     /// Weitere Namen für denselben Server. Windows merkt sich Anmeldungen je Servername und nicht
     /// je Rechner: Unter einem anderen Namen (z. B. `nas.local` statt `192.168.178.5`) ist deshalb
@@ -439,6 +481,15 @@ mod windows {
     pub fn unmount(cfg: &Config) -> Result<()> {
         let unc = format!(r"\\{}\{}", host(cfg), cfg.share);
         net(&["use", &unc, "/delete", "/y"]).map(|_| ())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        /// Prüft Anbindung und Aufruf der API: Eine nicht vorhandene Freigabe liefert einen Fehlercode, keinen Absturz.
+        #[test]
+        fn add_connection_reports_error() {
+            assert!(super::add_connection(r"\\127.0.0.1\gibt-es-nicht-restic-test", "niemand", "falsch").is_err());
+        }
     }
 }
 

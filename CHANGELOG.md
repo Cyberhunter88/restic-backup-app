@@ -3,6 +3,7 @@
 ## [Unveröffentlicht]
 
 ### Behoben
+- Windows: Ließ sich die Freigabe mit `net use` nicht über die Eingabe verbinden, übergab die App das SMB-Passwort als Argument; es war dann kurz in der Prozessliste sichtbar. Dieser Rückfall läuft jetzt direkt über die Windows-API (`WNetAddConnection2W`), ohne das Passwort in einer Befehlszeile.
 - Aufräumen alter Snapshots (`forget --prune`), die regelmäßige Teilprüfung und das Laden der Repository-Größe ließen sich nicht abbrechen. „Abbrechen“ und das Beenden der App wirkten erst, wenn restic damit fertig war; bis dahin blieb auch die Freigabe eingebunden. Ein Abbruch beim Aufräumen oder Prüfen beendet jetzt nur diese Schritte; das Backup selbst ist dann schon gesichert und zählt als „mit Warnungen“.
 - Zeitplan-Läufe: Unter „Frühere Läufe“ und in `last-run.log` stand nur „Backup abgeschlossen.“, ohne neue Dateien und hinzugefügte Datenmenge. Jetzt steht dort dieselbe Zusammenfassung wie bei einem Backup aus dem Fenster.
 
