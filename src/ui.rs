@@ -195,8 +195,9 @@ pub fn can_hide_window() -> bool {
 }
 
 /// Linux mit Wayland und XWayland: Das Fenster soll X11 nutzen, damit das X es verstecken kann.
+#[cfg(target_os = "linux")]
 pub fn prefer_x11() -> bool {
-    cfg!(target_os = "linux") && env_set("WAYLAND_DISPLAY") && env_set("DISPLAY")
+    env_set("WAYLAND_DISPLAY") && env_set("DISPLAY")
 }
 
 fn env_set(name: &str) -> bool {
