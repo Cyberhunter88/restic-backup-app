@@ -41,7 +41,8 @@ fn run_headless(scheduled: bool) -> anyhow::Result<()> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     let cfg = config::Config::load()?;
-    let mut lines: Vec<String> = vec![];
+    // Protokoll und Fortschritt schreiben beide hinein (Zusammenfassung je Snapshot)
+    let lines = std::cell::RefCell::new(Vec::<String>::new());
     let cancel = Arc::new(AtomicBool::new(false));
     // Erst wenn der Lauf die Sperre hält (erste Protokollzeile), gehören Status und Abbruch-Datei ihm; ein zweiter
     // Prozess, der nur „läuft bereits“ meldet, darf weder den Status überschreiben noch den Abbruch wegnehmen
@@ -69,11 +70,11 @@ fn run_headless(scheduled: bool) -> anyhow::Result<()> {
             holding.store(true, Ordering::Relaxed);
             status.borrow_mut().text.clone_from(&m);
             config::write_run_status(&status.borrow());
-            lines.push(m);
+            lines.borrow_mut().push(m);
         },
-        |e| {
+        |e| match e {
             // Nur bei ganzen Prozentschritten schreiben (restic meldet mehrmals pro Sekunde)
-            if let restic::BackupEvent::Progress { percent, .. } = e {
+            restic::BackupEvent::Progress { percent, .. } => {
                 let whole = (percent * 100.0).floor() as i64;
                 if whole != last_percent.replace(whole) {
                     let mut s = status.borrow_mut();
@@ -81,8 +82,12 @@ fn run_headless(scheduled: bool) -> anyhow::Result<()> {
                     config::write_run_status(&s);
                 }
             }
+            // Wie im Fenster: Diese Zeile wird im Verlauf zur Zusammenfassung des Laufs
+            restic::BackupEvent::Summary { snapshot_id, files_new, data_added } => lines.borrow_mut().push(job::summary_line(&snapshot_id, files_new, data_added)),
+            restic::BackupEvent::FileError(_) => {}
         },
     );
+    let mut lines = lines.into_inner();
     finished.store(true, Ordering::Relaxed);
     // Das laufende Backup nicht mit einer Fehlermeldung überschreiben
     if result.as_ref().is_err_and(|e| e.downcast_ref::<job::AlreadyRunning>().is_some()) {
@@ -94,17 +99,9 @@ fn run_headless(scheduled: bool) -> anyhow::Result<()> {
         return result.map(|_| ());
     }
     // Ein Abbruch aus dem Fenster ist kein Fehlschlag: keine Fehlermeldung, keine Wartezeit für den Zeitplan
-    let outcome = match &result {
-        Ok(_) => config::RunResult::Ok,
-        Err(_) if cancel.load(Ordering::Relaxed) => config::RunResult::Cancelled,
-        Err(_) => config::RunResult::Failed,
-    };
     let error = result.as_ref().err().map(|e| format!("{e:#}"));
-    lines.push(match (&result, outcome) {
-        (Ok(o), _) => if o.warnings { "Backup mit Warnungen abgeschlossen." } else { "Backup abgeschlossen." }.into(),
-        (Err(_), config::RunResult::Cancelled) => "Backup abgebrochen.".to_string(),
-        (Err(e), _) => format!("FEHLER: {e:#}"),
-    });
+    let (outcome, last_line) = job::run_outcome(result.as_ref().map(|o| o.warnings).map_err(|_| error.as_deref().unwrap_or_default()), cancel.load(Ordering::Relaxed));
+    lines.push(last_line);
     let failures = if scheduled && outcome == config::RunResult::Failed { config::record_schedule_failure() } else { 0 };
     if outcome != config::RunResult::Cancelled && !(scheduled && failures == 1) {
         notify::backup_finished(result.as_ref().is_ok_and(|o| o.warnings), error.as_deref(), cfg.notify_success);

@@ -2,7 +2,12 @@
 
 ## [Unveröffentlicht]
 
+### Behoben
+- Aufräumen alter Snapshots (`forget --prune`), die regelmäßige Teilprüfung und das Laden der Repository-Größe ließen sich nicht abbrechen. „Abbrechen“ und das Beenden der App wirkten erst, wenn restic damit fertig war; bis dahin blieb auch die Freigabe eingebunden. Ein Abbruch beim Aufräumen oder Prüfen beendet jetzt nur diese Schritte; das Backup selbst ist dann schon gesichert und zählt als „mit Warnungen“.
+- Zeitplan-Läufe: Unter „Frühere Läufe“ und in `last-run.log` stand nur „Backup abgeschlossen.“, ohne neue Dateien und hinzugefügte Datenmenge. Jetzt steht dort dieselbe Zusammenfassung wie bei einem Backup aus dem Fenster.
+
 ### Geändert
+- Ein Backup aus dem Fenster endet im Protokoll wie ein Zeitplan-Lauf mit „Backup abgeschlossen.“ (bisher „Backup erfolgreich.“).
 - Intern: Die Workflows belegen weniger Actions-Speicher. Pakete aus Pull Requests bleiben nur noch 3 Tage, ein erfolgreicher main-Build löscht die Pakete älterer main-Builds, der Release-Workflow löscht die Artefakte nach dem Veröffentlichen (die Pakete liegen dann am Release), und den Rust-Cache legt nur noch main an.
 
 ## [0.4.1]

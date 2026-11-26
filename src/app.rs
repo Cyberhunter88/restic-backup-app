@@ -399,26 +399,17 @@ impl App {
                 }
                 Msg::Event(BackupEvent::FileError(_)) => {}
                 Msg::Event(BackupEvent::Summary { snapshot_id, files_new, data_added }) => {
-                    self.log.push(format!("Snapshot {}: {files_new} neue Dateien, {} hinzugefügt", snapshot_id.chars().take(8).collect::<String>(), ui::human_bytes(data_added)));
+                    self.log.push(job::summary_line(&snapshot_id, files_new, data_added));
                     self.progress = 1.0;
                 }
                 Msg::BackupDone(r) => {
                     self.busy = false;
                     // Ein Abbruch ist kein Fehlschlag: keine Fehlermeldung, im Verlauf als „abgebrochen“
-                    let outcome = match &r {
-                        Ok(_) => crate::config::RunResult::Ok,
-                        Err(_) if self.cancel.load(Ordering::Relaxed) => crate::config::RunResult::Cancelled,
-                        Err(_) => crate::config::RunResult::Failed,
-                    };
+                    let (outcome, last_line) = job::run_outcome(r.as_ref().copied().map_err(String::as_str), self.cancel.load(Ordering::Relaxed));
                     if outcome != crate::config::RunResult::Cancelled {
                         crate::notify::backup_finished(matches!(r, Ok(true)), r.as_ref().err().map(String::as_str), self.cfg.notify_success);
                     }
-                    self.log.push(match r {
-                        Ok(false) => "Backup erfolgreich.".into(),
-                        Ok(true) => "Backup mit Warnungen abgeschlossen.".into(),
-                        Err(_) if outcome == crate::config::RunResult::Cancelled => "Backup abgebrochen.".into(),
-                        Err(e) => format!("FEHLER: {e}"),
-                    });
+                    self.log.push(last_line);
                     let _ = crate::config::write_last_run(outcome, &self.log);
                     self.reload_schedule_files();
                     self.last_run = crate::config::read_last_run();
@@ -574,8 +565,10 @@ impl App {
     fn load_overview(&mut self, ctx: &egui::Context) {
         let cfg = self.cfg.clone();
         self.overview_msg = "Lade Repository-Daten …".into();
+        // Abbruch nur beim Beenden der App (`Drop`): `stats` liest über SMB den ganzen Index
+        let cancel = self.cancel.clone();
         self.spawn(ctx, move |tx| {
-            let _ = tx.send(Msg::Overview(job::repo_overview(&cfg).map_err(|e| format!("{e:#}"))));
+            let _ = tx.send(Msg::Overview(job::repo_overview(&cfg, &cancel).map_err(|e| format!("{e:#}"))));
         });
     }
 

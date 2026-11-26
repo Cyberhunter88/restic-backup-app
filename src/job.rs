@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Config, RunResult};
 use crate::restic::{BackupEvent, BackupOptions, BackupOutcome, RepoState, Restic, local_hostname};
 use crate::secrets::{self, Secret};
 use crate::smb;
@@ -84,9 +84,9 @@ pub struct RepoOverview {
     pub free: Option<u64>,
 }
 
-pub fn repo_overview(cfg: &Config) -> Result<RepoOverview> {
+pub fn repo_overview(cfg: &Config, cancel: &AtomicBool) -> Result<RepoOverview> {
     let r = open(cfg)?;
-    let stats = r.stats()?;
+    let stats = r.stats(cancel)?;
     Ok(RepoOverview { size: stats.size, snapshots: r.snapshots()?.len(), free: smb::free_space(&r.repo) })
 }
 
@@ -94,6 +94,22 @@ pub fn repo_overview(cfg: &Config) -> Result<RepoOverview> {
 pub fn low_space_warning(free: Option<u64>, min_gb: u32) -> Option<String> {
     let free = free?;
     (min_gb > 0 && free < u64::from(min_gb) * 1024 * 1024 * 1024).then(|| format!("Warnung: Auf dem NAS sind nur noch {} frei (Warnschwelle: {min_gb} GB).", crate::ui::human_bytes(free)))
+}
+
+/// Protokollzeile zu einem geschriebenen Snapshot. Der Verlauf (`history.tsv`) übernimmt sie als Zusammenfassung.
+pub fn summary_line(snapshot_id: &str, files_new: u64, data_added: u64) -> String {
+    format!("Snapshot {}: {files_new} neue Dateien, {} hinzugefügt", snapshot_id.chars().take(8).collect::<String>(), crate::ui::human_bytes(data_added))
+}
+
+/// Ausgang und Abschlusszeile eines Backup-Laufs, gleich für Fenster und Zeitplan. `result`: `Ok(mit Warnungen)`
+/// oder der Fehlertext; `cancelled`: Der Nutzer hat abgebrochen (das ist kein Fehlschlag).
+pub fn run_outcome(result: Result<bool, &str>, cancelled: bool) -> (RunResult, String) {
+    match result {
+        Ok(false) => (RunResult::Ok, "Backup abgeschlossen.".into()),
+        Ok(true) => (RunResult::Ok, "Backup mit Warnungen abgeschlossen.".into()),
+        Err(_) if cancelled => (RunResult::Cancelled, "Backup abgebrochen.".into()),
+        Err(e) => (RunResult::Failed, format!("FEHLER: {e}")),
+    }
 }
 
 /// So viele nicht lesbare Dateien je Lauf werden einzeln ins Protokoll geschrieben.
@@ -224,11 +240,17 @@ pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log
         if let Err(e) = r.unlock(false) {
             log(format!("Hinweis: Veraltete Sperren konnten nicht entfernt werden: {e:#}"));
         }
-        match r.forget(cfg.keep_daily, cfg.keep_weekly, cfg.keep_monthly, &host, prune) {
+        match r.forget(cfg.keep_daily, cfg.keep_weekly, cfg.keep_monthly, &host, prune, cancel) {
             Ok(()) => {
                 if prune {
                     crate::config::write_last_prune();
                 }
+            }
+            // Der Snapshot ist gesichert: Ein Abbruch beim Aufräumen beendet nur die restlichen Schritte
+            Err(_) if cancel.load(Ordering::Relaxed) => {
+                log("Warnung: Aufräumen abgebrochen – das Backup selbst ist gesichert.".into());
+                outcome.warnings = true;
+                return Ok(outcome);
             }
             Err(e) => {
                 log(format!("Warnung: Aufräumen fehlgeschlagen: {e:#}"));
@@ -243,10 +265,15 @@ pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log
         // Regelmäßige Teilprüfung nur im Zeitplan-Lauf; ein Fehler dort ist eine Warnung, kein Backup-Fehler
         if !keep_mounted && crate::config::check_due(crate::config::read_last_check().as_ref(), cfg.check_interval_days, chrono::Local::now().naive_local()) {
             log(format!("Prüfe Repository ({} % der Daten) …", cfg.check_subset_percent));
-            match r.check_subset(cfg.check_subset_percent) {
+            match r.check_subset(cfg.check_subset_percent, cancel) {
                 Ok(()) => {
                     crate::config::write_last_check(true);
                     log("Repository-Prüfung bestanden.".into());
+                }
+                // Abgebrochen ist nicht fehlgeschlagen: kein Eintrag in `last-check.txt`, die Prüfung bleibt fällig
+                Err(_) if cancel.load(Ordering::Relaxed) => {
+                    log("Warnung: Repository-Prüfung abgebrochen – das Backup selbst ist gesichert.".into());
+                    outcome.warnings = true;
                 }
                 Err(e) => {
                     crate::config::write_last_check(false);
@@ -282,6 +309,15 @@ mod tests {
         assert_eq!(v, vec!["*.tmp".to_string(), d.clone()]);
         // nicht doppelt
         assert_eq!(excludes_with_data_dir(&v).len(), 2);
+    }
+
+    #[test]
+    fn outcome_and_final_line() {
+        assert_eq!(run_outcome(Ok(false), false), (RunResult::Ok, "Backup abgeschlossen.".into()));
+        assert_eq!(run_outcome(Ok(true), true).0, RunResult::Ok);
+        assert_eq!(run_outcome(Err("x"), true), (RunResult::Cancelled, "Backup abgebrochen.".into()));
+        assert_eq!(run_outcome(Err("kaputt"), false), (RunResult::Failed, "FEHLER: kaputt".into()));
+        assert_eq!(summary_line("0123456789abcdef", 3, 2048), "Snapshot 01234567: 3 neue Dateien, 2.0 KB hinzugefügt");
     }
 
     #[test]
@@ -323,7 +359,7 @@ mod tests {
         assert_eq!(snaps.len(), 2);
         assert!(snaps.iter().all(|s| s.paths.len() == 1));
         // Aufbewahrung gilt je Ordner: beide Snapshots bleiben erhalten
-        r.forget(1, 0, 0, "testhost", true).unwrap();
+        r.forget(1, 0, 0, "testhost", true, &AtomicBool::new(false)).unwrap();
         assert_eq!(r.snapshots().unwrap().len(), 2);
     }
 
@@ -370,8 +406,8 @@ mod tests {
         backup_sources(&r, &cfg, "testhost", &AtomicBool::new(false), |_| {}, |_| {}).unwrap();
         let snaps = r.snapshots().unwrap();
         assert_eq!(snaps.len(), 2);
-        assert!(r.stats().unwrap().size > 0);
-        r.check_subset(50).unwrap();
+        assert!(r.stats(&AtomicBool::new(false)).unwrap().size > 0);
+        r.check_subset(50, &AtomicBool::new(false)).unwrap();
         let diff = r.diff(&snaps[0].id, &snaps[1].id).unwrap();
         assert!(diff.iter().any(|e| e.modifier == "+" && e.path.ends_with("neu.txt")));
     }
