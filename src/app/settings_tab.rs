@@ -56,14 +56,14 @@ impl App {
                     field(ui, "NAS-Host", &mut self.cfg.host, "z. B. nas.local");
                     field(ui, "Freigabe", &mut self.cfg.share, "Name der SMB-Freigabe");
                     field(ui, "SMB-Benutzer", &mut self.cfg.smb_user, "");
-                    secret_field(ui, "SMB-Passwort", &mut self.smb_pw);
+                    secret_field(ui, "SMB-Passwort", &mut self.form.smb_pw);
                 });
             });
 
             ui::card(ui, Some("Repository"), |ui| {
                 egui::Grid::new("repo").num_columns(2).spacing([14.0, 10.0]).show(ui, |ui| {
                     field(ui, "Unterordner", &mut self.cfg.subpath, "Ordner des restic-Repos in der Freigabe");
-                    secret_field(ui, "Repo-Passwort", &mut self.repo_pw);
+                    secret_field(ui, "Repo-Passwort", &mut self.form.repo_pw);
                     field(ui, "restic-Programm", &mut self.cfg.restic_bin, "restic");
                     field(ui, "Rechnername", &mut self.cfg.backup_host, "leer = Name dieses Rechners (fest wählen, falls er sich ändert)");
                 });
@@ -76,12 +76,12 @@ impl App {
                 ui.horizontal(|ui| {
                     if ui.add_enabled(!self.busy, egui::Button::new("Repo prüfen")).clicked() {
                         let cfg = self.cfg.clone();
-                        self.repo_msg = "Prüfe Repository …".into();
+                        self.form.repo_msg = "Prüfe Repository …".into();
                         self.spawn(ui.ctx(), move |tx| {
                             let _ = tx.send(Msg::RepoInfo(job::describe_repo(&cfg).map_err(|e| format!("{e:#}"))));
                         });
                     }
-                    ui::status(ui, &self.repo_msg);
+                    ui::status(ui, &self.form.repo_msg);
                 });
                 ui::hint(ui, "Bestehendes Repo verwenden: Freigabe und Unterordner wie im Repo angeben, Passwort eintragen, dann „Repo prüfen“.");
             });
@@ -104,11 +104,11 @@ impl App {
             ui::card(ui, Some("Ausschlüsse"), |ui| {
                 ui::hint(ui, "Muster wie *.tmp oder **/node_modules – eine Liste mit einem Muster pro Zeile kann direkt eingefügt werden");
                 removable_list(ui, &mut self.cfg.excludes);
-                ui.add(egui::TextEdit::multiline(&mut self.new_exclude).hint_text("Muster hier einfügen (ein Muster pro Zeile)").desired_rows(3).desired_width(f32::INFINITY));
+                ui.add(egui::TextEdit::multiline(&mut self.form.new_exclude).hint_text("Muster hier einfügen (ein Muster pro Zeile)").desired_rows(3).desired_width(f32::INFINITY));
                 ui.horizontal(|ui| {
-                    if ui.button("Hinzufügen").clicked() && !self.new_exclude.trim().is_empty() {
-                        crate::config::add_excludes(&mut self.cfg.excludes, &self.new_exclude);
-                        self.new_exclude.clear();
+                    if ui.button("Hinzufügen").clicked() && !self.form.new_exclude.trim().is_empty() {
+                        crate::config::add_excludes(&mut self.cfg.excludes, &self.form.new_exclude);
+                        self.form.new_exclude.clear();
                     }
                     if ui.button(format!("Übliche Ausschlüsse ({})", crate::config::SYSTEM_NAME)).clicked() {
                         crate::config::add_excludes(&mut self.cfg.excludes, &crate::config::common_excludes().join("\n"));
@@ -129,10 +129,10 @@ impl App {
                 ui.label("Ordner mit Markerdatei ausschließen");
                 removable_list(ui, &mut self.cfg.exclude_if_present);
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.new_marker).hint_text(".nobackup").desired_width(220.0));
-                    if ui.button("Marker hinzufügen").clicked() && !self.new_marker.trim().is_empty() {
-                        self.cfg.exclude_if_present.push(self.new_marker.trim().to_string());
-                        self.new_marker.clear();
+                    ui.add(egui::TextEdit::singleline(&mut self.form.new_marker).hint_text(".nobackup").desired_width(220.0));
+                    if ui.button("Marker hinzufügen").clicked() && !self.form.new_marker.trim().is_empty() {
+                        self.cfg.exclude_if_present.push(self.form.new_marker.trim().to_string());
+                        self.form.new_marker.clear();
                     }
                 });
             });
@@ -166,13 +166,13 @@ impl App {
     fn save(&mut self) -> anyhow::Result<()> {
         self.cfg.validate()?;
         self.cfg.save()?;
-        if !self.smb_pw.is_empty() {
-            secrets::set(Secret::Smb, &self.smb_pw)?;
-            self.smb_pw.clear();
+        if !self.form.smb_pw.is_empty() {
+            secrets::set(Secret::Smb, &self.form.smb_pw)?;
+            self.form.smb_pw.clear();
         }
-        if !self.repo_pw.is_empty() {
-            secrets::set(Secret::Repo, &self.repo_pw)?;
-            self.repo_pw.clear();
+        if !self.form.repo_pw.is_empty() {
+            secrets::set(Secret::Repo, &self.form.repo_pw)?;
+            self.form.repo_pw.clear();
         }
         Ok(())
     }

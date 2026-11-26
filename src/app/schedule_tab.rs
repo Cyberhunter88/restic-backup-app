@@ -39,9 +39,9 @@ impl App {
                     self.cfg.schedule_times.remove(i);
                 }
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut self.new_time).hint_text("HH:MM").desired_width(80.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.sched.new_time).hint_text("HH:MM").desired_width(80.0));
                     if ui.button("＋ Uhrzeit hinzufügen").clicked() {
-                        match schedule::parse_time(self.new_time.trim()) {
+                        match schedule::parse_time(self.sched.new_time.trim()) {
                             Ok((h, m)) => {
                                 let t = format!("{h:02}:{m:02}");
                                 if !self.cfg.schedule_times.contains(&t) {
@@ -114,14 +114,14 @@ impl App {
                 let now = chrono::Local::now().naive_local();
                 egui::Grid::new("sched_diag").num_columns(2).spacing([18.0, 6.0]).show(ui, |ui| {
                     ui.label("Zeitplan im System");
-                    match &self.sched_status {
+                    match &self.sched.status {
                         None => ui.label(RichText::new("wird abgefragt …").color(MUTED)),
                         Some(s) if !s.installed => ui.label(RichText::new("nicht eingerichtet").color(WARN)),
                         Some(s) if !s.active => ui.label(RichText::new("eingerichtet, aber deaktiviert").color(ERR)),
                         Some(_) => ui.label(RichText::new("aktiv").color(OK)),
                     };
                     ui.end_row();
-                    if let Some(s) = self.sched_status.as_ref().filter(|s| s.installed) {
+                    if let Some(s) = self.sched.status.as_ref().filter(|s| s.installed) {
                         if let Some(exe) = &s.exe {
                             ui.label("Programmdatei");
                             if s.exe_exists {
@@ -141,7 +141,7 @@ impl App {
                         ui.end_row();
                     }
                     ui.label("Letztes Backup");
-                    ui.label(self.sched_last_success.map_or("noch keins".to_string(), |t| t.format("%d.%m.%Y %H:%M").to_string()));
+                    ui.label(self.sched.last_success.map_or("noch keins".to_string(), |t| t.format("%d.%m.%Y %H:%M").to_string()));
                     ui.end_row();
                     ui.label("Nächster Termin");
                     ui.label(match schedule::next_slot(now, &self.cfg.schedule_times, &self.cfg.schedule_days) {
@@ -149,13 +149,13 @@ impl App {
                         _ => "keiner (Uhrzeit oder Wochentag fehlt)".into(),
                     });
                     ui.end_row();
-                    if let Some((count, failed)) = self.sched_failures {
+                    if let Some((count, failed)) = self.sched.failures {
                         let next = failed + chrono::Duration::minutes(crate::scheduled::retry_delay_minutes(count));
                         ui.label("Fehlversuche");
                         ui.label(RichText::new(format!("{count} in Folge, zuletzt {} – nächster Versuch ab {}", failed.format("%d.%m. %H:%M"), next.format("%H:%M"))).color(WARN));
                         ui.end_row();
                     }
-                    if !self.sched_mount_ready {
+                    if !self.sched.mount_ready {
                         ui.label("Einbinden");
                         ui.label(RichText::new("nicht eingerichtet – geplante Läufe können die Freigabe nicht einbinden (siehe „Automatisches Einbinden“ unten)").color(ERR));
                         ui.end_row();
@@ -170,13 +170,13 @@ impl App {
                         self.load_schedule_status(ui.ctx());
                     }
                 });
-                ui::status(ui, &self.sched_check);
+                ui::status(ui, &self.sched.check);
                 ui.separator();
                 ui.label(RichText::new("Letzte Entscheidungen des Zeitplans").color(MUTED).size(13.0));
-                if self.sched_log.is_empty() {
+                if self.sched.log.is_empty() {
                     ui::hint(ui, "Noch keine Einträge.");
                 }
-                for (time, msg) in &self.sched_log {
+                for (time, msg) in &self.sched.log {
                     // Zeitstempel „JJJJ-MM-TT HH:MM:SS“ kürzen auf „TT.MM. HH:MM“
                     let short = chrono::NaiveDateTime::parse_from_str(time, "%Y-%m-%d %H:%M:%S").map_or(time.clone(), |t| t.format("%d.%m. %H:%M").to_string());
                     ui.horizontal_wrapped(|ui| {
@@ -234,7 +234,7 @@ impl App {
             });
             #[cfg(unix)]
             ui::card(ui, Some("Automatisches Einbinden (Linux)"), |ui| {
-                if self.sched_mount_ready {
+                if self.sched.mount_ready {
                     ui.label(RichText::new("Eingerichtet: Die Freigabe wird ohne Passwort-Abfrage eingebunden, auch im Zeitplan.").color(OK));
                 } else {
                     ui.label(RichText::new("Noch nicht eingerichtet: Jedes Einbinden fragt nach deinem Benutzer-Passwort, geplante Läufe scheitern.").color(WARN));
