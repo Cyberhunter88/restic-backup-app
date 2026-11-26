@@ -206,10 +206,8 @@ pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log
     let result = (|| {
         // Schneller Zugriffstest: restic würde bei verweigertem Zugriff (falsche Anmeldung) minutenlang
         // wiederholen; ein fehlender Ordner ist dagegen Sache von `probe` bzw. „Neues Repo anlegen“.
-        if let Err(e) = std::fs::read_dir(&r.repo) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                bail!("Kein Zugriff auf das Repository ({}): {e}", r.repo);
-            }
+        if let Err(e) = std::fs::read_dir(&r.repo) && e.kind() != std::io::ErrorKind::NotFound {
+            bail!("Kein Zugriff auf das Repository ({}): {e}", r.repo);
         }
         match r.probe() {
             RepoState::Ok => {}
@@ -284,10 +282,8 @@ pub fn run_backup(cfg: &Config, keep_mounted: bool, cancel: &AtomicBool, mut log
         }
         Ok(outcome)
     })();
-    if !keep_mounted {
-        if let Err(e) = unmount_if_ours(cfg) {
-            log(format!("Warnung: Unmount fehlgeschlagen: {e}"));
-        }
+    if !keep_mounted && let Err(e) = unmount_if_ours(cfg) {
+        log(format!("Warnung: Unmount fehlgeschlagen: {e}"));
     }
     result.map_err(|e| {
         if format!("{e:#}").contains("locked") {

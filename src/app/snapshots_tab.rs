@@ -54,10 +54,8 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label("Wiederherstellen nach:");
                     ui.add(egui::TextEdit::singleline(&mut self.restore_target).desired_width(ui.available_width() - 110.0).hint_text("Zielordner wählen"));
-                    if ui.button("Wählen …").clicked() {
-                        if let Some(p) = rfd::FileDialog::new().pick_folder() {
-                            self.restore_target = p.to_string_lossy().into_owned();
-                        }
+                    if ui.button("Wählen …").clicked() && let Some(p) = rfd::FileDialog::new().pick_folder() {
+                        self.restore_target = p.to_string_lossy().into_owned();
                     }
                 });
             });
@@ -78,20 +76,16 @@ impl App {
                 let what = include.unwrap_or_else(|| "den ganzen Snapshot".into());
                 ui.label(RichText::new(format!("{what} wirklich an den Originalort zurückschreiben? Vorhandene Dateien: {}.", self.restore_overwrite.label())).color(WARN));
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(!self.busy, egui::Button::new("Ja, wiederherstellen")).clicked() {
-                        if let Some((id, include)) = self.confirm_restore.take() {
-                            self.restore(&ctx, id, include);
-                        }
+                    if ui.add_enabled(!self.busy, egui::Button::new("Ja, wiederherstellen")).clicked() && let Some((id, include)) = self.confirm_restore.take() {
+                        self.restore(&ctx, id, include);
                     }
                     if ui.button("Nicht wiederherstellen").clicked() {
                         self.confirm_restore = None;
                     }
                 });
             }
-            if let Some(path) = self.restored_to.clone() {
-                if ui.link(format!("📂 {path} im Dateimanager öffnen")).clicked() {
-                    update::open_url(&path);
-                }
+            if let Some(path) = self.restored_to.clone() && ui.link(format!("📂 {path} im Dateimanager öffnen")).clicked() {
+                update::open_url(&path);
             }
         });
 
@@ -296,16 +290,14 @@ impl App {
                 });
             }
         });
-        if run {
-            if let Some(other) = self.compare_with.clone() {
-                let (cfg, base) = (self.cfg.clone(), id.to_string());
-                self.diff = None;
-                self.diff_msg = "Vergleiche …".into();
-                self.spawn(ctx, move |tx| {
-                    let r = job::open(&cfg).and_then(|r| r.diff(&other, &base));
-                    let _ = tx.send(Msg::Diff(r.map_err(|e| format!("{e:#}"))));
-                });
-            }
+        if run && let Some(other) = self.compare_with.clone() {
+            let (cfg, base) = (self.cfg.clone(), id.to_string());
+            self.diff = None;
+            self.diff_msg = "Vergleiche …".into();
+            self.spawn(ctx, move |tx| {
+                let r = job::open(&cfg).and_then(|r| r.diff(&other, &base));
+                let _ = tx.send(Msg::Diff(r.map_err(|e| format!("{e:#}"))));
+            });
         }
     }
 

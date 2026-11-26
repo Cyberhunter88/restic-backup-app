@@ -243,12 +243,8 @@ mod linux {
         }
         // Aus dem Fenster heraus einmalig einrichten: eine Rückfrage, danach nie wieder. Lehnt der Benutzer ab, käme
         // sonst gleich der nächste Dialog; scheitert es aus anderem Grund, bleibt der bisherige Weg über pkexec.
-        if INTERACTIVE.load(std::sync::atomic::Ordering::Relaxed) && !fstab_current(cfg) {
-            if let Err(e) = setup_fstab(cfg) {
-                if e.downcast_ref::<PromptDismissed>().is_some() {
-                    return Err(e);
-                }
-            }
+        if INTERACTIVE.load(std::sync::atomic::Ordering::Relaxed) && !fstab_current(cfg) && let Err(e) = setup_fstab(cfg) && e.downcast_ref::<PromptDismissed>().is_some() {
+            return Err(e);
         }
         // fstab-Eintrag mit `user`: Mount ohne Root und ohne Dialog (auch für Zeitplan)
         if fstab_current(cfg) {

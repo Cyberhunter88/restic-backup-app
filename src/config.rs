@@ -184,12 +184,8 @@ fn restic_works(p: &std::path::Path) -> bool {
 /// Bevorzugt ein neben der Anwendung liegendes restic, sonst das aus dem PATH.
 pub fn default_restic_bin() -> String {
     let name = if cfg!(windows) { "restic.exe" } else { "restic" };
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(p) = exe.parent().map(|d| d.join(name)) {
-            if p.exists() && restic_works(&p) {
-                return p.to_string_lossy().into_owned();
-            }
-        }
+    if let Ok(exe) = std::env::current_exe() && let Some(p) = exe.parent().map(|d| d.join(name)) && p.exists() && restic_works(&p) {
+        return p.to_string_lossy().into_owned();
     }
     "restic".into()
 }
@@ -775,9 +771,7 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let mut c = Config::default();
-        c.host = "nas".into();
-        c.sources.push("/home/x".into());
+        let c = Config { host: "nas".into(), sources: vec!["/home/x".into()], ..Default::default() };
         let s = toml::to_string_pretty(&c).unwrap();
         assert_eq!(toml::from_str::<Config>(&s).unwrap(), c);
     }
@@ -786,9 +780,7 @@ mod tests {
     fn export_import_roundtrip() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("export.toml");
-        let mut c = Config::default();
-        c.host = "nas".into();
-        c.sources = vec!["/a".into(), "/b".into()];
+        let c = Config { host: "nas".into(), sources: vec!["/a".into(), "/b".into()], ..Default::default() };
         c.export_to(&p).unwrap();
         assert_eq!(Config::import_from(&p).unwrap(), c);
         std::fs::write(&p, "das ist {kein toml").unwrap();
